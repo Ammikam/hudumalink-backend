@@ -1,4 +1,3 @@
-// routes/Admin.ts
 import express from 'express';
 import User from '../models/User';
 import Project from '../models/Project';
@@ -7,18 +6,11 @@ import { requireAdmin } from '../middlewares/roles';
 
 const router = express.Router();
 
-/**
- * All admin routes require:
- * - authenticated user
- * - admin role
- */
+
 router.use(requireAuth);
 router.use(requireAdmin);
 
-/**
- * GET /api/admin/stats
- * Admin dashboard statistics
- */
+
 router.get('/stats', async (_req, res) => {
   try {
     const [
@@ -32,7 +24,7 @@ router.get('/stats', async (_req, res) => {
       totalProjects,
       openProjects,
       inProgressProjects,
-      completedProjectsCount,
+      completedProjects,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ roles: 'client' }),
@@ -75,7 +67,7 @@ router.get('/stats', async (_req, res) => {
           total: totalProjects,
           open: openProjects,
           inProgress: inProgressProjects,
-          completed: completedProjectsCount,
+          completed: completedProjects,
         },
       },
     });
@@ -88,50 +80,38 @@ router.get('/stats', async (_req, res) => {
   }
 });
 
-/**
- * GET /api/admin/designers
- * Get all designers (optional status filter)
- */
-router.get('/designers', async (req, res) => {
+
+router.get('/designers/pending', async (req, res) => {
   try {
-    const { status } = req.query;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
 
-    const query: any = { roles: 'designer' };
+    const [designers, total] = await Promise.all([
+      User.find({
+        roles: 'designer',
+        'designerProfile.status': 'pending',
+      })
+        .select('name email avatar createdAt designerProfile')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
 
-    if (status) {
-      query['designerProfile.status'] = status;
-    }
-
-    const designers = await User.find(query).sort({ createdAt: -1 });
+      User.countDocuments({
+        roles: 'designer',
+        'designerProfile.status': 'pending',
+      }),
+    ]);
 
     res.json({
       success: true,
       designers,
-      count: designers.length,
-    });
-  } catch (error) {
-    console.error('Fetch designers error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch designers',
-    });
-  }
-});
-
-/**
- * GET /api/admin/designers/pending
- */
-router.get('/designers/pending', async (_req, res) => {
-  try {
-    const designers = await User.find({
-      roles: 'designer',
-      'designerProfile.status': 'pending',
-    }).sort({ createdAt: -1 });
-
-    res.json({
-      success: true,
-      designers,
-      count: designers.length,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error('Pending designers error:', error);
@@ -142,9 +122,54 @@ router.get('/designers/pending', async (_req, res) => {
   }
 });
 
-/**
- * PATCH /api/admin/designers/:id/approve
- */
+
+router.get('/designers', async (req, res) => {
+  try {
+    const { status, verified, search, page: pageStr, limit: limitStr } = req.query;
+    const page = parseInt(pageStr as string) || 1;
+    const limit = parseInt(limitStr as string) || 20;
+    const skip = (page - 1) * limit;
+
+    const query: any = { roles: 'designer' };
+
+    if (status) query['designerProfile.status'] = status;
+    if (verified !== undefined) query['designerProfile.verified'] = verified === 'true';
+
+    if (search) {
+      const searchRegex = { $regex: search as string, $options: 'i' };
+      query.$or = [{ name: searchRegex }, { email: searchRegex }];
+    }
+
+    const [designers, total] = await Promise.all([
+      User.find(query)
+        .select('name email avatar roles createdAt designerProfile')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+
+      User.countDocuments(query),
+    ]);
+
+    res.json({
+      success: true,
+      designers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Fetch designers error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch designers',
+    });
+  }
+});
+
+
 router.patch('/designers/:id/approve', async (req, res) => {
   try {
     const designer = await User.findById(req.params.id);
@@ -176,9 +201,7 @@ router.patch('/designers/:id/approve', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/admin/designers/:id/reject
- */
+
 router.patch('/designers/:id/reject', async (req, res) => {
   try {
     const { reason } = req.body;
@@ -211,12 +234,10 @@ router.patch('/designers/:id/reject', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/admin/designers/:id/suspend
- */
+
 router.patch('/designers/:id/suspend', async (req, res) => {
   try {
-    const { suspend, reason } = req.body;
+    const { suspended, reason } = req.body;
 
     const designer = await User.findById(req.params.id);
 
@@ -228,14 +249,14 @@ router.patch('/designers/:id/suspend', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Designer profile missing' });
     }
 
-    designer.designerProfile.status = suspend ? 'suspended' : 'approved';
-    designer.designerProfile.rejectionReason = suspend ? reason : undefined;
+    designer.designerProfile.status = suspended ? 'suspended' : 'approved';
+    designer.designerProfile.rejectionReason = suspended ? reason : undefined;
 
     await designer.save();
 
     res.json({
       success: true,
-      message: suspend ? 'Designer suspended' : 'Designer unsuspended',
+      message: suspended ? 'Designer suspended' : 'Designer unsuspended',
     });
   } catch (error) {
     console.error('Suspend designer error:', error);
@@ -246,9 +267,6 @@ router.patch('/designers/:id/suspend', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/admin/designers/:id/verify
- */
 router.patch('/designers/:id/verify', async (req, res) => {
   try {
     const { verified } = req.body;
@@ -275,9 +293,7 @@ router.patch('/designers/:id/verify', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/admin/designers/:id/super-verify
- */
+
 router.patch('/designers/:id/super-verify', async (req, res) => {
   try {
     const { superVerified } = req.body;
@@ -308,17 +324,32 @@ router.patch('/designers/:id/super-verify', async (req, res) => {
   }
 });
 
-/**
- * GET /api/admin/users
- */
-router.get('/users', async (_req, res) => {
+
+router.get('/users', async (req, res) => {
   try {
-    const users = await User.find().sort({ createdAt: -1 });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      User.find()
+        .select('name email avatar roles createdAt banned')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+
+      User.countDocuments(),
+    ]);
 
     res.json({
       success: true,
       users,
-      count: users.length,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error('Fetch users error:', error);
@@ -329,17 +360,33 @@ router.get('/users', async (_req, res) => {
   }
 });
 
-/**
- * GET /api/admin/projects
- */
-router.get('/projects', async (_req, res) => {
+
+router.get('/projects', async (req, res) => {
   try {
-    const projects = await Project.find().sort({ createdAt: -1 });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
+
+    const [projects, total] = await Promise.all([
+      Project.find()
+        .populate('client', 'name avatar')
+        .populate('designer', 'name avatar')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+
+      Project.countDocuments(),
+    ]);
 
     res.json({
       success: true,
       projects,
-      count: projects.length,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (error) {
     console.error('Fetch projects error:', error);
@@ -350,9 +397,7 @@ router.get('/projects', async (_req, res) => {
   }
 });
 
-/**
- * DELETE /api/admin/projects/:id
- */
+
 router.delete('/projects/:id', async (req, res) => {
   try {
     const project = await Project.findByIdAndDelete(req.params.id);
