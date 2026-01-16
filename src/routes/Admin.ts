@@ -80,7 +80,6 @@ router.get('/stats', async (_req, res) => {
   }
 });
 
-
 router.get('/designers/pending', async (req, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -121,7 +120,6 @@ router.get('/designers/pending', async (req, res) => {
     });
   }
 });
-
 
 router.get('/designers', async (req, res) => {
   try {
@@ -327,18 +325,29 @@ router.patch('/designers/:id/super-verify', async (req, res) => {
 
 router.get('/users', async (req, res) => {
   try {
+    const { search } = req.query;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const skip = (page - 1) * limit;
 
+    const query: any = {};
+
+    if (search) {
+      const searchRegex = { $regex: search as string, $options: 'i' };
+      query.$or = [
+        { name: searchRegex },
+        { email: searchRegex },
+      ];
+    }
+
     const [users, total] = await Promise.all([
-      User.find()
+      User.find(query)
         .select('name email avatar roles createdAt banned')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
 
-      User.countDocuments(),
+      User.countDocuments(query),
     ]);
 
     res.json({
@@ -360,6 +369,35 @@ router.get('/users', async (req, res) => {
   }
 });
 
+router.patch('/users/:id/ban', async (req, res) => {
+  try {
+    const { banned, reason } = req.body;
+
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    // Prevent banning admins
+    if (user.roles.includes('admin')) {
+      return res.status(403).json({ success: false, error: 'Cannot ban an admin' });
+    }
+
+    user.banned = banned;
+    user.banReason = banned ? reason : undefined;
+    user.bannedAt = banned ? new Date() : undefined;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: banned ? 'User banned successfully' : 'User unbanned successfully',
+    });
+  } catch (error) {
+    console.error('Ban user error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update user status' });
+  }
+});
 
 router.get('/projects', async (req, res) => {
   try {
@@ -418,5 +456,8 @@ router.delete('/projects/:id', async (req, res) => {
     });
   }
 });
+
+
+
 
 export default router;

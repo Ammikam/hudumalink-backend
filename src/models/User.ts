@@ -6,57 +6,74 @@ interface IUser extends Document {
   name: string;
   phone?: string;
   avatar?: string;
-  
+
   // Role system
   roles: ('client' | 'designer' | 'admin')[];
-  
+
+  // Designer-specific profile
   designerProfile?: {
-  // lifecycle
-  status: 'pending' | 'approved' | 'rejected' | 'suspended';
-  rejectionReason?: string;
+    // Lifecycle status
+    status: 'pending' | 'approved' | 'rejected' | 'suspended';
+    rejectionReason?: string;
 
-  // trust
-  verified: boolean;
-  superVerified: boolean;
+    // Trust & verification
+    verified: boolean;
+    superVerified: boolean;
 
-  // discipline
+    // Profile info
+    location: string;
+    about: string;
+    coverImage: string;
+    styles: string[];
+    startingPrice: number;
+    responseTime: string;
+    calendlyLink?: string;
+    videoUrl?: string;
+
+    // Metrics
+    rating: number;
+    reviewCount: number;
+    projectsCompleted: number;
+  };
+
+  // Account-level discipline (applies to all users)
   banned: boolean;
   banReason?: string;
+  bannedAt?: Date;
 
-  // profile
-  location: string;
-  about: string;
-  coverImage: string;
-  styles: string[];
-  startingPrice: number;
-  responseTime: string;
-  calendlyLink?: string;
-  videoUrl?: string;
-
-  // metrics
-  rating: number;
-  projectsCompleted: number;
-};
-
-  
   createdAt: Date;
   updatedAt: Date;
 }
 
 const UserSchema = new Schema<IUser>({
   clerkId: { type: String, required: true, unique: true },
-  email: { type: String, required: true },
+  email: { type: String, required: true, unique: true }, // Recommended: unique email
   name: { type: String, required: true },
   phone: String,
   avatar: String,
-  
+
   roles: {
     type: [String],
     enum: ['client', 'designer', 'admin'],
-    default: ['client'], // Everyone starts as client
+    default: ['client'],
   },
-  
+
+  // Move banned fields to root level
+  banned: { type: Boolean, default: false },
+  banReason: String,
+  bannedAt: Date,
+
   designerProfile: {
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'suspended'],
+      default: 'pending',
+    },
+    rejectionReason: String,
+
+    verified: { type: Boolean, default: false },
+    superVerified: { type: Boolean, default: false },
+
     location: String,
     about: String,
     coverImage: String,
@@ -65,23 +82,21 @@ const UserSchema = new Schema<IUser>({
     responseTime: String,
     calendlyLink: String,
     videoUrl: String,
-    verified: { type: Boolean, default: false },
-    superVerified: { type: Boolean, default: false },
+
     rating: { type: Number, default: 0 },
     reviewCount: { type: Number, default: 0 },
     projectsCompleted: { type: Number, default: 0 },
-    status: {
-      type: String,
-      enum: ['pending', 'active', 'suspended'],
-      default: 'pending',
-    },
   },
-  
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });
 
-UserSchema.index({ clerkId: 1 });
+// Indexes for performance
+UserSchema.index({ clerkId: 1 }, { unique: true });
+UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 UserSchema.index({ 'designerProfile.status': 1 });
+UserSchema.index({ roles: 1 });
+UserSchema.index({ banned: 1 });
 
 export default mongoose.model<IUser>('User', UserSchema);
