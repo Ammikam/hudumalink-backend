@@ -5,10 +5,7 @@ import { requireAdmin } from '../middlewares/roles';
 
 const router = express.Router();
 
-/**
- * CLIENT: Get own projects
- * GET /api/projects
- */
+
 router.get('/', requireAuth, async (req: any, res) => {
   try {
     const projects = await Project.find({
@@ -29,32 +26,48 @@ router.get('/', requireAuth, async (req: any, res) => {
   }
 });
 
-/**
- * ADMIN: Get all projects
- * GET /api/projects/admin
- */
+
 router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const projects = await Project.find().sort({ createdAt: -1 });
+    console.log('Admin fetching projects...');
+
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 15;
+    const skip = (page - 1) * limit;
+
+    const projects = await Project.find()
+      .populate('client', 'name avatar')
+      .populate('designer', 'name avatar')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    console.log('Projects fetched:', projects.length); 
+    console.log('Sample project:', projects[0]);
+
+    const total = await Project.countDocuments();
 
     res.json({
       success: true,
       projects,
-      count: projects.length,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
     });
-  } catch (error) {
-    console.error('Error fetching admin projects:', error);
+  } catch (error: any) {
+    console.error('PROJECTS ADMIN ERROR:', error); 
     res.status(500).json({
       success: false,
       error: 'Failed to fetch projects',
+      details: error.message,
     });
   }
 });
 
-/**
- * Get single project (client OR admin)
- * GET /api/projects/:id
- */
+
 router.get('/:id', requireAuth, async (req: any, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -66,7 +79,7 @@ router.get('/:id', requireAuth, async (req: any, res) => {
       });
     }
 
-    // Client can only view own project
+   
     if (
       !req.user.isAdmin &&
       project.client.clerkId !== req.user.clerkId
@@ -90,10 +103,7 @@ router.get('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
-/**
- * Create project (client only)
- * POST /api/projects
- */
+
 router.post('/', requireAuth, async (req: any, res) => {
   try {
     const project = new Project({
@@ -120,10 +130,7 @@ router.post('/', requireAuth, async (req: any, res) => {
   }
 });
 
-/**
- * Update project (owner or admin)
- * PATCH /api/projects/:id
- */
+
 router.patch('/:id', requireAuth, async (req: any, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -162,10 +169,7 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
-/**
- * Delete project (admin only)
- * DELETE /api/projects/:id
- */
+
 router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const project = await Project.findByIdAndDelete(req.params.id);
