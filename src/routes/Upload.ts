@@ -2,49 +2,44 @@ import express from 'express';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import streamifier from 'streamifier';
+import { requireAuth } from '../middlewares/auth';
+import User from '../models/User';
 
 const router = express.Router();
 
-// Configure multer to store files in memory
+// Cloudinary config (make sure .env has these)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// Multer: store in memory
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit per file
-  },
-  fileFilter: (req, file, cb) => {
-    // Only accept images
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-// Helper function to upload buffer to Cloudinary
+// Helper: upload buffer to Cloudinary
 const uploadToCloudinary = (buffer: Buffer, folder: string): Promise<string> => {
   return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
+    const stream = cloudinary.uploader.upload_stream(
       {
-        folder: `hudumalink/${folder}`, // Organize by folder
+        folder: `hudumalink/${folder}`,
         resource_type: 'auto',
         transformation: [
-          { width: 1920, height: 1920, crop: 'limit' }, // Max dimensions
-          { quality: 'auto:good' }, // Auto quality optimization
-          { fetch_format: 'auto' }, // Auto format (WebP when supported)
+          { width: 1920, height: 1920, crop: 'limit' },
+          { quality: 'auto:good' },
+          { fetch_format: 'auto' },
         ],
       },
       (error, result) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(result!.secure_url);
-        }
+        if (error) reject(error);
+        else resolve(result!.secure_url);
       }
     );
-
-    streamifier.createReadStream(buffer).pipe(uploadStream);
+    streamifier.createReadStream(buffer).pipe(stream);
   });
 };
 
@@ -158,5 +153,118 @@ router.delete('/delete', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete image' });
   }
 });
+
+router.post(
+  '/designer-apply',
+  requireAuth,
+  upload.fields([
+    { name: 'portfolioImages', maxCount: 20 },
+    { name: 'credentials', maxCount: 10 },
+  ]),
+  async (req: any, res) => {
+    try {
+      const user = req.user;
+
+      // Prevent re-application
+      if (user.designerProfile?.status && user.designerProfile.status !== 'rejected') {
+        return res.status(400).json({
+          success: false,
+          error: 'You have already submitted an application',
+        });
+      }
+
+      // Upload portfolio images
+      const portfolioUrls: string[] = [];
+      if (req.files?.portfolioImages) {
+        const files = Array.isArray(req.files.portfolioImages)
+          ? req.files.portfolioImages
+          : [req.files.portfolioImages];
+        for (const file of files) {
+          const url = await uploadToCloudinary(file.buffer, 'designer-portfolio');
+          portfolioUrls.push(url);
+        }
+      }
+
+      // Upload credentials
+      const credentialUrls: string[] = [];
+      if (req.files?.credentials) {
+        const files = Array.isArray(req.files.credentials)
+          ? req.files.credentials
+          : [req.files.credentials];
+        for (const file of files) {
+          const url = await uploadToCloudinary(file.buffer, 'designer-credentials');
+          credentialUrls.push(url);
+        }
+      }
+
+      // Parse form data
+      const {
+        fullName,
+        phone,
+        idNumber,
+        experience,
+        education,
+        location,
+        about,
+        startingPrice,
+        responseTime,
+        calendlyLink,
+        videoUrl,
+        styles,
+        references,
+        socialLinks,
+      } = req.body;
+
+      const parsedStyles = styles ? JSON.parse(styles) : [];
+      const parsedReferences = references ? JSON.parse(references) : [];
+      const parsedSocialLinks = socialLinks ? JSON.parse(socialLinks) : {};
+
+      // Create or update designerProfile
+      user.designerProfile = {
+        status: 'pending',
+        idNumber: idNumber || '',
+        portfolioImages: portfolioUrls,
+        credentials: credentialUrls,
+        references: parsedReferences,
+        location: location || '',
+        about: about || '',
+        styles: parsedStyles,
+        startingPrice: Number(startingPrice) || 0,
+        responseTime: responseTime || '',
+        calendlyLink: calendlyLink || '',
+        videoUrl: videoUrl || '',
+        socialLinks: parsedSocialLinks,
+        verified: false,
+        superVerified: false,
+        rating: 0,
+        reviewCount: 0,
+        projectsCompleted: 0,
+      };
+
+      // Add designer role
+      if (!user.roles.includes('designer')) {
+        user.roles.push('designer');
+      }
+
+      // Update name/phone if provided
+      if (fullName) user.name = fullName;
+      if (phone) user.phone = phone;
+
+      await user.save();
+
+      res.json({
+        success: true,
+        message: 'Designer application submitted successfully! Awaiting admin approval.',
+      });
+    } catch (error: any) {
+      console.error('Designer application error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to submit application',
+        details: error.message,
+      });
+    }
+  }
+);
 
 export default router;
