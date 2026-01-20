@@ -140,7 +140,7 @@ router.get('/designers', async (req, res) => {
 
     const [designers, total] = await Promise.all([
       User.find(query)
-        .select('name email avatar roles createdAt designerProfile')
+        .select('name email phone avatar roles createdAt designerProfile')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
