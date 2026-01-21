@@ -1,10 +1,9 @@
 import express from 'express';
-import Project from '../models/Project';
+import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/roles';
 
 const router = express.Router();
-
 
 router.get('/', requireAuth, async (req: any, res) => {
   try {
@@ -26,30 +25,45 @@ router.get('/', requireAuth, async (req: any, res) => {
   }
 });
 
-
 router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
   try {
-    console.log('Admin fetching projects...');
-
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 15;
     const skip = (page - 1) * limit;
 
-    const projects = await Project.find()
-      .populate('client', 'name avatar')
-      .populate('designer', 'name avatar')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    const [projects, total] = await Promise.all([
+      Project.find()
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
 
-    console.log('Projects fetched:', projects.length); 
-    console.log('Sample project:', projects[0]);
+      Project.countDocuments(),
+    ]);
 
-    const total = await Project.countDocuments();
+    const formattedProjects = projects.map(project => {
+      // Safe client access
+      const client = project.client || { name: 'Unknown Client', clerkId: 'unknown', avatar: null };
+
+      return {
+        _id: project._id.toString(),
+        title: project.title || 'Untitled Project',
+        description: project.description || 'No description',
+        budget: project.budget || 0,
+        status: project.status || 'open',
+        createdAt: project.createdAt,
+        client: {
+          _id: client.clerkId || project._id.toString(),
+          name: client.name,
+          avatar: client.avatar || null,
+        },
+        designer: null, // safe
+      };
+    });
 
     res.json({
       success: true,
-      projects,
+      projects: formattedProjects,
       pagination: {
         page,
         limit,
@@ -58,7 +72,7 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
       },
     });
   } catch (error: any) {
-    console.error('PROJECTS ADMIN ERROR:', error); 
+    console.error('PROJECTS ADMIN ERROR:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch projects',
@@ -66,7 +80,6 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
     });
   }
 });
-
 
 router.get('/:id', requireAuth, async (req: any, res) => {
   try {
@@ -79,7 +92,6 @@ router.get('/:id', requireAuth, async (req: any, res) => {
       });
     }
 
-   
     if (
       !req.user.isAdmin &&
       project.client.clerkId !== req.user.clerkId
@@ -102,7 +114,6 @@ router.get('/:id', requireAuth, async (req: any, res) => {
     });
   }
 });
-
 
 router.post('/', requireAuth, async (req: any, res) => {
   try {
@@ -129,7 +140,6 @@ router.post('/', requireAuth, async (req: any, res) => {
     });
   }
 });
-
 
 router.patch('/:id', requireAuth, async (req: any, res) => {
   try {
@@ -168,7 +178,6 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
     });
   }
 });
-
 
 router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
