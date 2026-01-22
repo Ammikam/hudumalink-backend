@@ -33,7 +33,10 @@ const ProposalSchema = new Schema<IProposal>({
   createdAt: { type: Date, default: Date.now },
 });
 
-// Indexes for performance
+// ← ADD THIS UNIQUE INDEX
+ProposalSchema.index({ project: 1, designer: 1 }, { unique: true });
+
+// Existing indexes
 ProposalSchema.index({ project: 1 });
 ProposalSchema.index({ designer: 1 });
 ProposalSchema.index({ status: 1 });

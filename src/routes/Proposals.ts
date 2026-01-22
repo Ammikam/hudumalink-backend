@@ -11,10 +11,11 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const { projectId, message, price, timeline } = req.body;
 
-    if (!projectId || !message || !price || !timeline) {
+    // Validation
+    if (!projectId || !message?.trim() || !price || !timeline?.trim()) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields',
+        error: 'All fields are required: projectId, message, price, timeline',
       });
     }
 
@@ -26,27 +27,37 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
+    // Create proposal
     const proposal = new Proposal({
       project: projectId,
       designer: designerId,
-      message,
-      price,
-      timeline,
+      message: message.trim(),
+      price: Number(price),
+      timeline: timeline.trim(),
       status: 'pending',
     });
 
     await proposal.save();
 
-    await proposal.populate('designer', 'name avatar');
+    // Populate designer info for response
+    await proposal.populate('designer', 'name avatar phone');
 
-    res.json({
+    return res.json({
       success: true,
       proposal,
-      message: 'Proposal sent successfully',
+      message: 'Proposal sent successfully!',
     });
   } catch (error: any) {
-    console.error('Proposal error:', error);
-    res.status(500).json({
+    // Handle duplicate proposal (from unique index)
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        error: 'You have already sent a proposal for this project',
+      });
+    }
+
+    console.error('Proposal creation error:', error);
+    return res.status(500).json({
       success: false,
       error: 'Failed to send proposal',
       details: error.message,
