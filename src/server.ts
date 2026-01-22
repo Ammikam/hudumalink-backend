@@ -9,6 +9,7 @@ import designerRoutes from './routes/Designers';
 import uploadRoutes from './routes/Upload';
 import adminRoutes from './routes/Admin';
 import User from './models/User';
+import proposalRoutes from './routes/Proposals';
 dotenv.config();
 
 
@@ -39,6 +40,7 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/designers', designerRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/proposals', proposalRoutes);
 
 app.get('/api/users/:clerkId', async (req, res) => {
   const { clerkId } = req.params;
