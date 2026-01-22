@@ -1,6 +1,7 @@
 // src/routes/Proposals.ts
 import express from 'express';
 import Proposal from '../models/Proposal';
+import Project from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
 import { RequestWithUser, UserPayload } from '../types'; 
 
@@ -86,6 +87,50 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
       success: false,
       error: 'Failed to fetch proposals',
     });
+  }
+});
+
+// GET /api/proposals/project/:projectId - Client sees proposals for their project
+router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const projectId = req.params.projectId;
+
+    const proposals = await Proposal.find({ project: projectId })
+      .populate('designer', 'name avatar phone')
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, proposals });
+  } catch (error) {
+    console.error('Fetch project proposals error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch proposals' });
+  }
+});
+
+router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const proposalId = req.params.id;
+
+    const proposal = await Proposal.findById(proposalId)
+      .populate('project')
+      .populate('designer');
+
+    if (!proposal) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    proposal.status = 'accepted';
+    await proposal.save();
+
+    // Update project status and assign designer
+    await Project.findByIdAndUpdate(proposal.project._id, {
+      status: 'in_progress',
+      designer: proposal.designer._id,
+    });
+
+    res.json({ success: true, message: 'Designer hired successfully!' });
+  } catch (error) {
+    console.error('Accept proposal error:', error);
+    res.status(500).json({ success: false, error: 'Failed to accept proposal' });
   }
 });
 
