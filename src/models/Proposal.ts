@@ -8,6 +8,7 @@ interface IProposal extends Document {
   price: number;
   timeline: string;
   status: 'pending' | 'accepted' | 'rejected';
+  rejectionReason?: string; 
   createdAt: Date;
 }
 
@@ -30,13 +31,14 @@ const ProposalSchema = new Schema<IProposal>({
     enum: ['pending', 'accepted', 'rejected'],
     default: 'pending',
   },
+  rejectionReason: { type: String }, // ← New field
   createdAt: { type: Date, default: Date.now },
 });
 
-// ← ADD THIS UNIQUE INDEX
+// Unique index: one proposal per designer per project
 ProposalSchema.index({ project: 1, designer: 1 }, { unique: true });
 
-// Existing indexes
+// Performance indexes
 ProposalSchema.index({ project: 1 });
 ProposalSchema.index({ designer: 1 });
 ProposalSchema.index({ status: 1 });

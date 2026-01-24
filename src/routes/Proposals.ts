@@ -134,4 +134,54 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
+// PATCH /api/proposals/:id/reject
+router.patch('/:id/reject', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const proposalId = req.params.id;
+    const { reason } = req.body; // Optional reason
+
+    // Find proposal and populate project (to get client)
+    const proposal = await Proposal.findById(proposalId)
+      .populate('project'); // populate full project
+
+    if (!proposal) {
+      return res.status(404).json({ success: false, error: 'Proposal not found' });
+    }
+
+    // Type assertion because populate doesn't change TS type
+    const project = proposal.project as any;
+
+    // Ownership check — only project owner can reject
+    const projectClientClerkId = project?.client?.clerkId;
+    const currentUserClerkId = req.user?.clerkId;
+
+    if (projectClientClerkId !== currentUserClerkId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: You can only reject proposals for your own projects',
+      });
+    }
+
+    // Reject the proposal
+    proposal.status = 'rejected';
+    if (reason?.trim()) {
+      proposal.rejectionReason = reason.trim();
+    }
+    await proposal.save();
+
+    res.json({
+      success: true,
+      message: 'Proposal rejected successfully',
+      proposal,
+    });
+  } catch (error: any) {
+    console.error('Reject proposal error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject proposal',
+      details: error.message,
+    });
+  }
+});
+
 export default router;
