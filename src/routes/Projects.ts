@@ -9,7 +9,9 @@ router.get('/', requireAuth, async (req: any, res) => {
   try {
     const projects = await Project.find({
       'client.clerkId': req.user.clerkId,
-    }).sort({ createdAt: -1 });
+    })
+      .populate('designer', 'name avatar') 
+      .sort({ createdAt: -1 });
 
     res.json({
       success: true,
