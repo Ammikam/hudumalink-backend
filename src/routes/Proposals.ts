@@ -106,6 +106,7 @@ router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res)
   }
 });
 
+// PATCH /api/proposals/:id/accept
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const proposalId = req.params.id;
@@ -118,8 +119,33 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(404).json({ success: false, error: 'Proposal not found' });
     }
 
+    // Ownership check
+    const projectClientClerkId = (proposal.project as any).client?.clerkId;
+    const currentUserClerkId = req.user?.clerkId;
+
+    if (projectClientClerkId !== currentUserClerkId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: You can only accept proposals for your own projects',
+      });
+    }
+
+    // Accept the chosen proposal
     proposal.status = 'accepted';
     await proposal.save();
+
+    // AUTO-REJECT ALL OTHER PROPOSALS FOR THIS PROJECT
+    await Proposal.updateMany(
+      {
+        project: proposal.project._id,
+        _id: { $ne: proposal._id }, // exclude the accepted one
+        status: 'pending', // only pending ones
+      },
+      {
+        status: 'rejected',
+        rejectionReason: 'Project awarded to another designer',
+      }
+    );
 
     // Update project status and assign designer
     await Project.findByIdAndUpdate(proposal.project._id, {
@@ -127,10 +153,17 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       designer: proposal.designer._id,
     });
 
-    res.json({ success: true, message: 'Designer hired successfully!' });
-  } catch (error) {
+    res.json({
+      success: true,
+      message: 'Designer hired successfully! Other proposals have been rejected.',
+    });
+  } catch (error: any) {
     console.error('Accept proposal error:', error);
-    res.status(500).json({ success: false, error: 'Failed to accept proposal' });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to accept proposal',
+      details: error.message,
+    });
   }
 });
 
