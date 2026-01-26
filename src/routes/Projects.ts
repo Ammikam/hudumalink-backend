@@ -2,6 +2,7 @@ import express from 'express';
 import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/roles';
+import { RequestWithUser } from '../types';
 
 const router = express.Router();
 
@@ -80,6 +81,23 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
       error: 'Failed to fetch projects',
       details: error.message,
     });
+  }
+});
+
+// active projects for designers
+router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const designerId = req.user?._id;
+    const projects = await Project.find({
+      designer: designerId,
+      status: 'in_progress',
+    })
+      .populate('client', 'name')
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, projects });
+  } catch (error) {
+    res.status(500).json({ success: false });
   }
 });
 
@@ -206,5 +224,7 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
     });
   }
 });
+
+
 
 export default router;
