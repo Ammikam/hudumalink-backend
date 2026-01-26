@@ -83,9 +83,11 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// ✅ FIXED: Added .populate('designer', 'name avatar')
 router.get('/:id', requireAuth, async (req: any, res) => {
   try {
-    const project = await Project.findById(req.params.id);
+    const project = await Project.findById(req.params.id)
+      .populate('designer', 'name avatar'); // ✅ ADD THIS LINE
 
     if (!project) {
       return res.status(404).json({
@@ -204,7 +206,5 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
     });
   }
 });
-
-
 
 export default router;
