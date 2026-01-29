@@ -14,6 +14,7 @@ import adminRoutes from './routes/Admin';
 import proposalRoutes from './routes/Proposals';
 import Message from './models/Message'; 
 import User from './models/User';
+import reviewRoutes from './routes/reviews';
 
 dotenv.config();
 
@@ -51,6 +52,7 @@ app.use('/api/designers', designerRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/proposals', proposalRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // Get user by clerkId
 app.get('/api/users/:clerkId', async (req, res) => {

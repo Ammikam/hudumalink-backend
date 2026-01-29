@@ -1,3 +1,4 @@
+// backend/routes/projects.ts 
 import express from 'express';
 import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
@@ -148,6 +149,56 @@ router.get('/mongo-id/:clerkId', requireAuth, async (req: RequestWithUser, res) 
   } catch (error) {
     console.error('Error fetching mongo ID:', error);
     res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// ✅ MARK PROJECT AS COMPLETE (must be BEFORE the generic /:id route)
+router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    const project = await Project.findById(req.params.id);
+
+    if (!project) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found',
+      });
+    }
+
+    // Only client can mark as complete
+    if (project.client.clerkId !== user.clerkId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only the project client can mark it as complete',
+      });
+    }
+
+    // Must be in progress to complete
+    if (project.status !== 'in_progress') {
+      return res.status(400).json({
+        success: false,
+        error: 'Only in-progress projects can be completed',
+      });
+    }
+
+    project.status = 'completed';
+    await project.save();
+
+    res.json({
+      success: true,
+      project,
+      message: 'Project marked as complete',
+    });
+  } catch (error) {
+    console.error('Error completing project:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete project',
+    });
   }
 });
 

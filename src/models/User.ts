@@ -1,4 +1,3 @@
-// src/models/User.ts
 import mongoose, { Schema, Document } from 'mongoose';
 
 interface IReference {
@@ -14,21 +13,17 @@ interface ISocialLinks {
 }
 
 interface IDesignerProfile {
-  // Lifecycle
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
   rejectionReason?: string;
 
-  // Trust & Verification
   verified: boolean;
   superVerified: boolean;
 
-  // Application Data (filled during designer signup)
-  idNumber?: string;                    // National ID for verification
-  portfolioImages: string[];            // URLs from Cloudinary
-  credentials: string[];                // URLs of certificates/licenses
+  idNumber?: string;
+  portfolioImages: string[];
+  credentials: string[];
   references: IReference[];
 
-  // Profile Info
   location: string;
   about: string;
   coverImage?: string;
@@ -39,33 +34,33 @@ interface IDesignerProfile {
   videoUrl?: string;
   socialLinks?: ISocialLinks;
 
-  // Metrics
   rating: number;
   reviewCount: number;
   projectsCompleted: number;
 }
 
-interface IUser extends Document {
+export interface IUser extends Document {
   clerkId: string;
   email: string;
   name: string;
   phone?: string;
   avatar?: string;
 
-  // Role system
   roles: ('client' | 'designer' | 'admin')[];
-
-  // Designer-specific profile (created on application)
   designerProfile?: IDesignerProfile;
 
-  // Account-level discipline
   banned: boolean;
   banReason?: string;
   bannedAt?: Date;
 
   createdAt: Date;
   updatedAt: Date;
+
+  isActiveDesigner(): boolean;
+  updateRating(newRating: number, reviewCount: number): Promise<void>;
 }
+
+
 
 const ReferenceSchema = new Schema<IReference>({
   name: { type: String, required: true },
@@ -105,40 +100,91 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
   videoUrl: String,
   socialLinks: SocialLinksSchema,
 
-  rating: { type: Number, default: 0 },
-  reviewCount: { type: Number, default: 0 },
-  projectsCompleted: { type: Number, default: 0 },
-});
-
-const UserSchema = new Schema<IUser>({
-  clerkId: { type: String, required: true, unique: true },
-  email: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  phone: String,
-  avatar: String,
-
-  roles: {
-    type: [String],
-    enum: ['client', 'designer', 'admin'],
-    default: ['client'],
+  rating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5,
+    set: (val: number) => Math.round(val * 10) / 10,
   },
-
-  banned: { type: Boolean, default: false },
-  banReason: String,
-  bannedAt: Date,
-
-  designerProfile: DesignerProfileSchema,
-
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
+  reviewCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  projectsCompleted: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
 });
 
-// Indexes for performance and queries
+
+
+const UserSchema = new Schema<IUser>(
+  {
+    clerkId: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true },
+    name: { type: String, required: true },
+    phone: String,
+    avatar: String,
+
+    roles: {
+      type: [String],
+      enum: ['client', 'designer', 'admin'],
+      default: ['client'],
+    },
+
+    banned: { type: Boolean, default: false },
+    banReason: String,
+    bannedAt: Date,
+
+    designerProfile: DesignerProfileSchema,
+  },
+  {
+    timestamps: true, //  auto-manages createdAt & updatedAt
+  }
+);
+
+
+
 UserSchema.index({ clerkId: 1 }, { unique: true });
 UserSchema.index({ email: 1 }, { unique: true });
 UserSchema.index({ roles: 1 });
 UserSchema.index({ banned: 1 });
 UserSchema.index({ 'designerProfile.status': 1 });
-UserSchema.index({ 'designerProfile.portfolioImages': 1 });
+UserSchema.index({ 'designerProfile.rating': -1 });
+UserSchema.index({ 'designerProfile.reviewCount': -1 });
+UserSchema.index({ 'designerProfile.projectsCompleted': -1 });
+
+
+
+UserSchema.virtual('displayName').get(function () {
+  if (this.designerProfile?.superVerified) return `${this.name} ⭐`;
+  if (this.designerProfile?.verified) return `${this.name} ✓`;
+  return this.name;
+});
+
+
+
+UserSchema.methods.isActiveDesigner = function (): boolean {
+  return (
+    this.roles.includes('designer') &&
+    this.designerProfile?.status === 'approved' &&
+    !this.banned
+  );
+};
+
+UserSchema.methods.updateRating = async function (
+  newRating: number,
+  reviewCount: number
+): Promise<void> {
+  if (!this.designerProfile) return;
+
+  this.designerProfile.rating = newRating;
+  this.designerProfile.reviewCount = reviewCount;
+  await this.save();
+};
+
 
 export default mongoose.model<IUser>('User', UserSchema);
