@@ -3,15 +3,23 @@ import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/roles';
 import { RequestWithUser } from '../types';
+import User from '../models/User';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
-router.get('/', requireAuth, async (req: any, res) => {
+// Client's own projects
+router.get('/', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
     const projects = await Project.find({
-      'client.clerkId': req.user.clerkId,
+      'client.clerkId': user.clerkId,
     })
-      .populate('designer', 'name avatar') 
+      .populate('designer', 'name avatar')
       .sort({ createdAt: -1 });
 
     res.json({
@@ -28,7 +36,13 @@ router.get('/', requireAuth, async (req: any, res) => {
   }
 });
 
-router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
+// Admin all projects
+router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 15;
@@ -45,7 +59,6 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
     ]);
 
     const formattedProjects = projects.map(project => {
-      // Safe client access
       const client = project.client || { name: 'Unknown Client', clerkId: 'unknown', avatar: null };
 
       return {
@@ -60,7 +73,7 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
           name: client.name,
           avatar: client.avatar || null,
         },
-        designer: null, // safe
+        designer: null,
       };
     });
 
@@ -84,10 +97,29 @@ router.get('/admin', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// active projects for designers
-router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
+// Public open projects (for designers to browse)
+router.get('/open', async (req, res) => {
   try {
-    const designerId = req.user?._id;
+    const projects = await Project.find({ status: 'open' })
+      .populate('client', 'name')
+      .sort({ createdAt: -1 });
+
+    res.json(projects);
+  } catch (error) {
+    console.error('Error fetching open projects:', error);
+    res.status(500).json({ error: 'Failed to fetch open projects' });
+  }
+});
+
+// Designer's active (hired) projects
+router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    const designerId = user._id;
     const projects = await Project.find({
       designer: designerId,
       status: 'in_progress',
@@ -97,15 +129,43 @@ router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
 
     res.json({ success: true, projects });
   } catch (error) {
-    res.status(500).json({ success: false });
+    console.error('Error fetching active projects:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch active projects' });
   }
 });
 
-// ✅ FIXED: Added .populate('designer', 'name avatar')
-router.get('/:id', requireAuth, async (req: any, res) => {
+// Get MongoDB _id from Clerk ID (used by chat)
+router.get('/mongo-id/:clerkId', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
+    const targetUser = await User.findOne({ clerkId: req.params.clerkId }).select('_id');
+    if (!targetUser) return res.status(404).json({ success: false, error: 'User not found' });
+    res.json({ success: true, mongoId: targetUser._id.toString() });
+  } catch (error) {
+    console.error('Error fetching mongo ID:', error);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+// SINGLE PROJECT DETAIL — ALLOW BOTH CLIENT AND HIRED DESIGNER
+router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    // Validate ID first
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'Invalid project ID' });
+    }
+
     const project = await Project.findById(req.params.id)
-      .populate('designer', 'name avatar'); // ✅ ADD THIS LINE
+      .populate('designer', 'name avatar');
 
     if (!project) {
       return res.status(404).json({
@@ -114,13 +174,15 @@ router.get('/:id', requireAuth, async (req: any, res) => {
       });
     }
 
-    if (
-      !req.user.isAdmin &&
-      project.client.clerkId !== req.user.clerkId
-    ) {
+    const isAdmin = user.isAdmin;
+    const isClient = project.client.clerkId === user.clerkId;
+    const isDesigner = project.designer && project.designer._id.toString() === user._id.toString();
+
+    // Allow access if: admin OR client OR hired designer
+    if (!isAdmin && !isClient && !isDesigner) {
       return res.status(403).json({
         success: false,
-        error: 'Access denied',
+        error: 'Access denied: You are not the project client or hired designer',
       });
     }
 
@@ -137,13 +199,19 @@ router.get('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
-router.post('/', requireAuth, async (req: any, res) => {
+// Create project
+router.post('/', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
     const project = new Project({
       ...req.body,
       client: {
         ...req.body.client,
-        clerkId: req.user.clerkId, // 🔐 never trust frontend
+        clerkId: user.clerkId,
       },
     });
 
@@ -163,7 +231,13 @@ router.post('/', requireAuth, async (req: any, res) => {
   }
 });
 
-router.patch('/:id', requireAuth, async (req: any, res) => {
+// Update project
+router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
     const project = await Project.findById(req.params.id);
 
@@ -174,10 +248,7 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
       });
     }
 
-    if (
-      !req.user.isAdmin &&
-      project.client.clerkId !== req.user.clerkId
-    ) {
+    if (!user.isAdmin && project.client.clerkId !== user.clerkId) {
       return res.status(403).json({
         success: false,
         error: 'Access denied',
@@ -201,7 +272,13 @@ router.patch('/:id', requireAuth, async (req: any, res) => {
   }
 });
 
-router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
+// Delete project (admin only)
+router.delete('/:id', requireAuth, requireAdmin, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
   try {
     const project = await Project.findByIdAndDelete(req.params.id);
 
@@ -224,7 +301,5 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
     });
   }
 });
-
-
 
 export default router;
