@@ -32,6 +32,12 @@ export const DesignerProfileSchema = new Schema(
     },
 
     // ---------- Public profile ----------
+    tagline: {
+      type: String,
+      default: 'Creative Interior Designer & Space Planner',
+      trim: true,
+      maxlength: 120,
+    },
     location: String,
     avatar: String,
     coverImage: String,
@@ -51,6 +57,11 @@ export const DesignerProfileSchema = new Schema(
       type: Number,
       default: 0,
     },
+    reviewCount: {
+      type: Number,
+      default: 0,
+    },
+
     reviews: [
       {
         clientId: String,

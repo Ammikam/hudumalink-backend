@@ -8,6 +8,7 @@ export interface UserPayload {
   name: string;
   roles: string[];
   isAdmin?: boolean;
+  avatar?: string;
 }
 
 export interface RequestWithUser extends Request {

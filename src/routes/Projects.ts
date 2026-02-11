@@ -185,6 +185,13 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
       });
     }
 
+    // ✅ NEW: Increment the designer's projectsCompleted count
+    if (project.designer) {
+      await User.findByIdAndUpdate(project.designer, {
+        $inc: { 'designerProfile.projectsCompleted': 1 }
+      });
+    }
+
     project.status = 'completed';
     await project.save();
 
