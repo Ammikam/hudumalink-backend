@@ -12,6 +12,16 @@ interface ISocialLinks {
   website?: string;
 }
 
+// ✅ NEW: Review interface for embedded reviews
+interface IReview {
+  clientName: string;
+  clientAvatar?: string;
+  rating: number;
+  comment: string;
+  date: Date;
+  projectImage?: string;
+}
+
 interface IDesignerProfile {
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
   rejectionReason?: string;
@@ -27,6 +37,7 @@ interface IDesignerProfile {
   location: string;
   about: string;
   coverImage?: string;
+  tagline?: string; // ✅ Adding tagline field
   styles: string[];
   startingPrice: number;
   responseTime?: string;
@@ -37,6 +48,9 @@ interface IDesignerProfile {
   rating: number;
   reviewCount: number;
   projectsCompleted: number;
+  
+  // ✅ NEW: Embedded reviews array
+  reviews?: IReview[];
 }
 
 export interface IUser extends Document {
@@ -60,8 +74,6 @@ export interface IUser extends Document {
   updateRating(newRating: number, reviewCount: number): Promise<void>;
 }
 
-
-
 const ReferenceSchema = new Schema<IReference>({
   name: { type: String, required: true },
   email: { type: String, required: true },
@@ -72,6 +84,21 @@ const SocialLinksSchema = new Schema<ISocialLinks>({
   instagram: String,
   pinterest: String,
   website: String,
+});
+
+// ✅ NEW: Review schema for embedded reviews
+const ReviewSchema = new Schema<IReview>({
+  clientName: { type: String, required: true },
+  clientAvatar: { type: String, default: '' },
+  rating: { 
+    type: Number, 
+    required: true,
+    min: 1,
+    max: 5 
+  },
+  comment: { type: String, default: '' },
+  date: { type: Date, default: Date.now },
+  projectImage: { type: String, default: '' },
 });
 
 const DesignerProfileSchema = new Schema<IDesignerProfile>({
@@ -93,6 +120,7 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
   location: { type: String, default: '' },
   about: { type: String, default: '' },
   coverImage: String,
+  tagline: String, // ✅ Adding tagline field
   styles: { type: [String], default: [] },
   startingPrice: { type: Number, default: 0 },
   responseTime: String,
@@ -117,9 +145,13 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
     default: 0,
     min: 0,
   },
+  
+  // ✅ NEW: Embedded reviews array
+  reviews: {
+    type: [ReviewSchema],
+    default: [],
+  },
 });
-
-
 
 const UserSchema = new Schema<IUser>(
   {
@@ -146,8 +178,6 @@ const UserSchema = new Schema<IUser>(
   }
 );
 
-
-
 UserSchema.index({ clerkId: 1 }, { unique: true });
 UserSchema.index({ email: 1 }, { unique: true });
 UserSchema.index({ roles: 1 });
@@ -157,15 +187,11 @@ UserSchema.index({ 'designerProfile.rating': -1 });
 UserSchema.index({ 'designerProfile.reviewCount': -1 });
 UserSchema.index({ 'designerProfile.projectsCompleted': -1 });
 
-
-
 UserSchema.virtual('displayName').get(function () {
   if (this.designerProfile?.superVerified) return `${this.name} ⭐`;
   if (this.designerProfile?.verified) return `${this.name} ✓`;
   return this.name;
 });
-
-
 
 UserSchema.methods.isActiveDesigner = function (): boolean {
   return (
@@ -185,6 +211,5 @@ UserSchema.methods.updateRating = async function (
   this.designerProfile.reviewCount = reviewCount;
   await this.save();
 };
-
 
 export default mongoose.model<IUser>('User', UserSchema);
