@@ -1,4 +1,4 @@
-// backend/routes/projects.ts 
+// backend/src/routes/projects.ts
 import express from 'express';
 import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
@@ -9,7 +9,7 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
-// Client's own projects
+// ─── Client's own projects ────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -37,7 +37,7 @@ router.get('/', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// Admin all projects
+// ─── Admin: all projects ──────────────────────────────────────────────────────
 router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -45,12 +45,14 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
   }
 
   try {
-    const page = parseInt(req.query.page as string) || 1;
+    const page  = parseInt(req.query.page  as string) || 1;
     const limit = parseInt(req.query.limit as string) || 15;
-    const skip = (page - 1) * limit;
+    const skip  = (page - 1) * limit;
 
     const [projects, total] = await Promise.all([
       Project.find()
+        // ✅ CHANGE 3: populate designer so admin panel shows real designer info
+        .populate('designer', 'name avatar')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -63,18 +65,19 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
       const client = project.client || { name: 'Unknown Client', clerkId: 'unknown', avatar: null };
 
       return {
-        _id: project._id.toString(),
-        title: project.title || 'Untitled Project',
+        _id:         project._id.toString(),
+        title:       project.title       || 'Untitled Project',
         description: project.description || 'No description',
-        budget: project.budget || 0,
-        status: project.status || 'open',
-        createdAt: project.createdAt,
+        budget:      project.budget      || 0,
+        status:      project.status      || 'open',
+        createdAt:   project.createdAt,
         client: {
-          _id: client.clerkId || project._id.toString(),
-          name: client.name,
-          avatar: client.avatar || null,
+          _id:    client.clerkId || project._id.toString(),
+          name:   client.name,
+          avatar: client.avatar  || null,
         },
-        designer: null,
+        // ✅ CHANGE 3: use real designer value instead of hardcoded null
+        designer: project.designer ?? null,
       };
     });
 
@@ -98,11 +101,12 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
   }
 });
 
-// Public open projects (for designers to browse)
-router.get('/open', async (req, res) => {
+// ─── Public open projects (for designers to browse) ──────────────────────────
+// ✅ CHANGE 1: removed .populate('client', 'name') — client is embedded in the
+//    document already, populate overwrites it and breaks OpenProjectsPage
+router.get('/open', async (_req, res) => {
   try {
     const projects = await Project.find({ status: 'open' })
-      .populate('client', 'name')
       .sort({ createdAt: -1 });
 
     res.json(projects);
@@ -112,7 +116,7 @@ router.get('/open', async (req, res) => {
   }
 });
 
-// Designer's active (hired) projects
+// ─── Designer's active (hired) projects ──────────────────────────────────────
 router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -123,7 +127,7 @@ router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
     const designerId = user._id;
     const projects = await Project.find({
       designer: designerId,
-      status: 'in_progress',
+      status:   'in_progress',
     })
       .populate('client', 'name')
       .sort({ createdAt: -1 });
@@ -135,7 +139,7 @@ router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// Get MongoDB _id from Clerk ID (used by chat)
+// ─── Get MongoDB _id from Clerk ID (used by chat) ────────────────────────────
 router.get('/mongo-id/:clerkId', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -152,7 +156,8 @@ router.get('/mongo-id/:clerkId', requireAuth, async (req: RequestWithUser, res) 
   }
 });
 
-// ✅ MARK PROJECT AS COMPLETE (must be BEFORE the generic /:id route)
+// ─── Mark project as COMPLETE ─────────────────────────────────────────────────
+// Must be BEFORE /:id to avoid route collision
 router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -163,10 +168,7 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
     const project = await Project.findById(req.params.id);
 
     if (!project) {
-      return res.status(404).json({
-        success: false,
-        error: 'Project not found',
-      });
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
     // Only client can mark as complete
@@ -185,31 +187,33 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
       });
     }
 
-    // ✅ NEW: Increment the designer's projectsCompleted count
+    // Increment the designer's projectsCompleted count
     if (project.designer) {
       await User.findByIdAndUpdate(project.designer, {
-        $inc: { 'designerProfile.projectsCompleted': 1 }
+        $inc: { 'designerProfile.projectsCompleted': 1 },
       });
     }
 
     project.status = 'completed';
     await project.save();
 
+    // ✅ CHANGE 2: re-fetch with populated designer so the response has
+    //    { name, avatar } instead of a raw ObjectId
+    const populated = await Project.findById(project._id)
+      .populate('designer', 'name avatar');
+
     res.json({
       success: true,
-      project,
+      project: populated,
       message: 'Project marked as complete',
     });
   } catch (error) {
     console.error('Error completing project:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to complete project',
-    });
+    res.status(500).json({ success: false, error: 'Failed to complete project' });
   }
 });
 
-// SINGLE PROJECT DETAIL — ALLOW BOTH CLIENT AND HIRED DESIGNER
+// ─── Single project detail ────────────────────────────────────────────────────
 router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -217,7 +221,6 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
   }
 
   try {
-    // Validate ID first
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ success: false, error: 'Invalid project ID' });
     }
@@ -226,17 +229,14 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
       .populate('designer', 'name avatar');
 
     if (!project) {
-      return res.status(404).json({
-        success: false,
-        error: 'Project not found',
-      });
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
-    const isAdmin = user.isAdmin;
-    const isClient = project.client.clerkId === user.clerkId;
-    const isDesigner = project.designer && project.designer._id.toString() === user._id.toString();
+    const isAdmin    = user.isAdmin;
+    const isClient   = project.client.clerkId === user.clerkId;
+    const isDesigner = project.designer &&
+      project.designer._id.toString() === user._id.toString();
 
-    // Allow access if: admin OR client OR hired designer
     if (!isAdmin && !isClient && !isDesigner) {
       return res.status(403).json({
         success: false,
@@ -244,20 +244,14 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      project,
-    });
+    res.json({ success: true, project });
   } catch (error) {
     console.error('Error fetching project:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch project',
-    });
+    res.status(500).json({ success: false, error: 'Failed to fetch project' });
   }
 });
 
-// Create project
+// ─── Create project ───────────────────────────────────────────────────────────
 router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -282,14 +276,11 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
     });
   } catch (error) {
     console.error('Error creating project:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create project',
-    });
+    res.status(500).json({ success: false, error: 'Failed to create project' });
   }
 });
 
-// Update project
+// ─── Update project ───────────────────────────────────────────────────────────
 router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -300,17 +291,11 @@ router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
     const project = await Project.findById(req.params.id);
 
     if (!project) {
-      return res.status(404).json({
-        success: false,
-        error: 'Project not found',
-      });
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
     if (!user.isAdmin && project.client.clerkId !== user.clerkId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied',
-      });
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
     Object.assign(project, req.body);
@@ -323,14 +308,11 @@ router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
     });
   } catch (error) {
     console.error('Error updating project:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update project',
-    });
+    res.status(500).json({ success: false, error: 'Failed to update project' });
   }
 });
 
-// Delete project (admin only)
+// ─── Delete project (admin only) ─────────────────────────────────────────────
 router.delete('/:id', requireAuth, requireAdmin, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) {
@@ -341,22 +323,13 @@ router.delete('/:id', requireAuth, requireAdmin, async (req: RequestWithUser, re
     const project = await Project.findByIdAndDelete(req.params.id);
 
     if (!project) {
-      return res.status(404).json({
-        success: false,
-        error: 'Project not found',
-      });
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
-    res.json({
-      success: true,
-      message: 'Project deleted successfully',
-    });
+    res.json({ success: true, message: 'Project deleted successfully' });
   } catch (error) {
     console.error('Error deleting project:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to delete project',
-    });
+    res.status(500).json({ success: false, error: 'Failed to delete project' });
   }
 });
 
