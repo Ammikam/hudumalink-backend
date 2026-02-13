@@ -156,15 +156,26 @@ router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    const allowedUpdates = [
+    // Fields that live inside designerProfile.*
+    const profileFields = [
       'tagline', 'location', 'about', 'responseTime',
       'startingPrice', 'calendlyLink', 'styles', 'coverImage', 'socialLinks',
     ];
 
+    // Fields that live at the top level of the User document
+    const topLevelFields = ['avatar'];
+
     const updates: any = {};
-    allowedUpdates.forEach(field => {
+
+    profileFields.forEach(field => {
       if (req.body[field] !== undefined) {
         updates[`designerProfile.${field}`] = req.body[field];
+      }
+    });
+
+    topLevelFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
       }
     });
 
