@@ -1,11 +1,23 @@
-// src/routes/Proposals.ts
+// backend/src/routes/proposals.ts
 import express from 'express';
 import Proposal from '../models/Proposal';
 import Project from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
-import { RequestWithUser, UserPayload } from '../types'; 
+import { RequestWithUser } from '../types'; 
+import mongoose from 'mongoose';
 
 const router = express.Router();
+
+// ─── Helper: Get Invite model (same schema as invites.ts) ────────────────────
+const InviteSchema = new mongoose.Schema({
+  project:  { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  designer: { type: mongoose.Schema.Types.ObjectId, ref: 'User',    required: true, index: true },
+  status:   { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
+  respondedAt: { type: Date },
+}, { timestamps: true });
+
+InviteSchema.index({ project: 1, designer: 1 }, { unique: true });
+const Invite = mongoose.models.Invite || mongoose.model('Invite', InviteSchema);
 
 // POST /api/proposals
 router.post('/', requireAuth, async (req: RequestWithUser, res) => {
@@ -28,6 +40,21 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
+    // ✅ NEW: Check if there's a pending invite for this project-designer pair
+    const existingInvite = await Invite.findOne({
+      project: projectId,
+      designer: designerId,
+      status: 'pending',
+    });
+
+    // If there's a pending invite, auto-accept it when they send a proposal
+    if (existingInvite) {
+      existingInvite.status = 'accepted';
+      existingInvite.respondedAt = new Date();
+      await existingInvite.save();
+      console.log(`✅ Auto-accepted invite ${existingInvite._id} for designer ${designerId} on project ${projectId}`);
+    }
+
     // Create proposal
     const proposal = new Proposal({
       project: projectId,
@@ -46,7 +73,9 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
     return res.json({
       success: true,
       proposal,
-      message: 'Proposal sent successfully!',
+      message: existingInvite 
+        ? 'Proposal sent & invite accepted!' 
+        : 'Proposal sent successfully!',
     });
   } catch (error: any) {
     // Handle duplicate proposal (from unique index)
