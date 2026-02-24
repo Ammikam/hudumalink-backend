@@ -1,4 +1,4 @@
-// src/routes/users.ts
+// backend/src/routes/users.ts
 import express from 'express';
 import User from '../models/User';
 import { requireAuth } from '../middlewares/auth';
@@ -7,11 +7,11 @@ import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';
 import { RequestWithUser } from '../types';
 
+// ─── Multer + Cloudinary setup ───────────────────────────────────────────────
 
-// Memory storage → pipe directly to Cloudinary, no temp files
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB cap
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new Error('Only image files are allowed'));
@@ -33,40 +33,161 @@ function uploadToCloudinary(buffer: Buffer, folder: string, publicId: string): P
 
 const router = express.Router();
 
-// GET /api/users/mongo-id/:clerkId
+// ─── GET /api/users/mongo-id/:clerkId ────────────────────────────────────────
 router.get('/mongo-id/:clerkId', requireAuth, async (req, res) => {
   try {
-    console.log(`[mongo-id] Requested for clerkId: ${req.params.clerkId}`);
-
     const user = await User.findOne({ clerkId: req.params.clerkId }).select('_id');
-
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-
-    res.json({
-      success: true,
-      mongoId: user._id.toString()
-    });
+    res.json({ success: true, mongoId: user._id.toString() });
   } catch (err) {
     console.error('[mongo-id] Error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// If you already have /api/users/:clerkId for full user, keep it
+// ─── GET /api/users/designer-status ──────────────────────────────────────────
+router.get('/designer-status', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+  try {
+    if (!user.roles.includes('designer') || !user.designerProfile) {
+      return res.json({ success: true, status: 'none' });
+    }
+
+    const status = user.designerProfile.status || 'pending';
+    
+    res.json({
+      success: true,
+      status,
+      rejectionReason: user.designerProfile.rejectionReason,
+    });
+  } catch (err) {
+    console.error('[designer-status]', err);
+    res.status(500).json({ success: false, error: 'Failed to check status' });
+  }
+});
+
+// ─── POST /api/users/apply-designer ──────────────────────────────────────────
+router.post('/apply-designer', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+  try {
+    const {
+      idNumber, location, about, styles, startingPrice,
+      responseTime, portfolioImages, references, calendlyLink, socialLinks,
+    } = req.body;
+
+    // Validation
+    if (!idNumber?.trim()) {
+      return res.status(400).json({ success: false, error: 'National ID number is required' });
+    }
+    if (!location?.trim() || !about?.trim() || !Array.isArray(styles) || styles.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: location, about, and at least one style',
+      });
+    }
+    if (!Array.isArray(portfolioImages) || portfolioImages.length < 3) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least 3 portfolio images are required',
+      });
+    }
+    if (!Array.isArray(references) || references.length < 2) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least 2 professional references are required',
+      });
+    }
+
+    // Check if user already has a designer application
+    if (user.roles.includes('designer') && user.designerProfile) {
+      const status = user.designerProfile.status;
+      if (status === 'pending') {
+        return res.status(400).json({
+          success: false,
+          error: 'You already have a pending application',
+        });
+      }
+      if (status === 'approved') {
+        return res.status(400).json({
+          success: false,
+          error: 'You are already an approved designer',
+        });
+      }
+    }
+
+    // Build the update
+    const updates: any = {};
+    
+    if (!user.roles.includes('designer')) {
+      updates.$addToSet = { roles: 'designer' };
+    }
+
+    updates.$set = {
+      'designerProfile.status': 'pending',
+      'designerProfile.idNumber': idNumber.trim(),
+      'designerProfile.location': location.trim(),
+      'designerProfile.about': about.trim(),
+      'designerProfile.styles': styles,
+      'designerProfile.startingPrice': Number(startingPrice) || 250000,
+      'designerProfile.responseTime': responseTime || 'Within 24 hours',
+      'designerProfile.portfolioImages': portfolioImages.filter((url: string) => url?.trim()),
+      'designerProfile.references': references.filter((ref: any) => 
+        ref.name?.trim() && ref.email?.trim() && ref.relation?.trim()
+      ),
+      'designerProfile.calendlyLink': calendlyLink?.trim() || '',
+      'designerProfile.socialLinks': socialLinks || {},
+      'designerProfile.rating': 0,
+      'designerProfile.reviewCount': 0,
+      'designerProfile.projectsCompleted': 0,
+      'designerProfile.verified': false,
+      'designerProfile.superVerified': false,
+      'designerProfile.reviews': [],
+      'designerProfile.credentials': [],
+    };
+
+    const updated = await User.findByIdAndUpdate(
+      user._id,
+      updates,
+      { new: true, runValidators: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Designer application submitted successfully',
+      user: updated,
+    });
+  } catch (err: any) {
+    console.error('[apply-designer]', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to submit application',
+      details: err.message,
+    });
+  }
+});
+
+// ─── GET /api/users/:clerkId ─────────────────────────────────────────────────
 router.get('/:clerkId', requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ clerkId: req.params.clerkId });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
     res.json({ success: true, user });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
-// POST /api/users/upload-avatar
+// ─── POST /api/users/upload-avatar ───────────────────────────────────────────
 router.post('/upload-avatar', requireAuth, upload.single('avatar'), async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user)     return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -76,9 +197,9 @@ router.post('/upload-avatar', requireAuth, upload.single('avatar'), async (req: 
     const url = await uploadToCloudinary(
       req.file.buffer,
       'designer-avatars',
-      `avatar_${user.clerkId}`   // same public_id = auto-overwrite on re-upload
+      `avatar_${user.clerkId}`
     );
-    await User.findOneAndUpdate({ clerkId: user.clerkId }, { $set: { avatar: url } });
+    await User.findByIdAndUpdate(user._id, { $set: { avatar: url } });
     res.json({ success: true, url });
   } catch (err) {
     console.error('[upload-avatar]', err);
@@ -86,7 +207,7 @@ router.post('/upload-avatar', requireAuth, upload.single('avatar'), async (req: 
   }
 });
 
-// POST /api/users/upload-cover
+// ─── POST /api/users/upload-cover ────────────────────────────────────────────
 router.post('/upload-cover', requireAuth, upload.single('cover'), async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user)     return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -98,10 +219,7 @@ router.post('/upload-cover', requireAuth, upload.single('cover'), async (req: Re
       'designer-covers',
       `cover_${user.clerkId}`
     );
-    await User.findOneAndUpdate(
-      { clerkId: user.clerkId },
-      { $set: { 'designerProfile.coverImage': url } }
-    );
+    await User.findByIdAndUpdate(user._id, { $set: { 'designerProfile.coverImage': url } });
     res.json({ success: true, url });
   } catch (err) {
     console.error('[upload-cover]', err);
