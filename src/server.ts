@@ -19,6 +19,7 @@ import userRouter from './routes/users';
 import messagesRouter from './routes/messages';
 import statsRouter from './routes/stats';
 import invitesRouter from './routes/invites';
+import inspirationsRouter from './routes/Inspirations';
 
 
 dotenv.config();
@@ -62,6 +63,7 @@ app.use('/api/users', userRouter);
 app.use('/api/messages', messagesRouter);
 app.use('/api/stats', statsRouter);
 app.use('/api/invites', invitesRouter);
+app.use('/api/inspirations', inspirationsRouter);
 
 // Get user by clerkId
 app.get('/api/users/:clerkId', async (req, res) => {

@@ -12,6 +12,15 @@ interface ISocialLinks {
   website?: string;
 }
 
+interface IUserPreferences {
+  styles?: string[];          // Preferred design styles
+  budgetRange?: {
+    min: number;
+    max: number;
+  };
+  locations?: string[];       // Preferred locations
+}
+
 // ✅ NEW: Review interface for embedded reviews
 interface IReview {
   clientName: string;
@@ -59,6 +68,7 @@ export interface IUser extends Document {
   name: string;
   phone?: string;
   avatar?: string;
+  preferences?: IUserPreferences
 
   roles: ('client' | 'designer' | 'admin')[];
   designerProfile?: IDesignerProfile;
@@ -153,6 +163,15 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
   },
 });
 
+const UserPreferencesSchema = new Schema<IUserPreferences>({
+  styles: { type: [String], default: [] },
+  budgetRange: {
+    min: { type: Number, default: 50000 },
+    max: { type: Number, default: 5000000 },
+  },
+  locations: { type: [String], default: [] },
+}, { _id: false });
+
 const UserSchema = new Schema<IUser>(
   {
     clerkId: { type: String, required: true, unique: true },
@@ -172,6 +191,7 @@ const UserSchema = new Schema<IUser>(
     bannedAt: Date,
 
     designerProfile: DesignerProfileSchema,
+    preferences: UserPreferencesSchema,
   },
   {
     timestamps: true, //  auto-manages createdAt & updatedAt
@@ -211,5 +231,7 @@ UserSchema.methods.updateRating = async function (
   this.designerProfile.reviewCount = reviewCount;
   await this.save();
 };
+
+UserSchema.index({ 'preferences.styles': 1 });
 
 export default mongoose.model<IUser>('User', UserSchema);
