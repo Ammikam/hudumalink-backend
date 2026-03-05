@@ -1,4 +1,4 @@
-// backend/src/routes/users.ts
+// backend/src/routes/users.ts - COMPLETE WITH PROFILE UPDATE
 import express from 'express';
 import User from '../models/User';
 import { requireAuth } from '../middlewares/auth';
@@ -8,7 +8,6 @@ import { Readable } from 'stream';
 import { RequestWithUser } from '../types';
 
 // ─── Multer + Cloudinary setup ───────────────────────────────────────────────
-
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -32,6 +31,86 @@ function uploadToCloudinary(buffer: Buffer, folder: string, publicId: string): P
 }
 
 const router = express.Router();
+
+// ✅ NEW: Update client profile
+router.patch('/update-profile', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const { location, phone, bio } = req.body;
+
+    // Update user in MongoDB
+    const updatedUser = await User.findByIdAndUpdate(
+      user._id,
+      {
+        $set: {
+          ...(location !== undefined && { location }),
+          ...(phone !== undefined && { phone }),
+          ...(bio !== undefined && { bio }),
+        },
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        location: updatedUser.location,
+        phone: updatedUser.phone,
+        bio: updatedUser.bio,
+      },
+    });
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update profile' 
+    });
+  }
+});
+
+// ✅ NEW: Get current user's profile
+router.get('/profile', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const userProfile = await User.findById(user._id).select(
+      'name email clerkId location phone bio avatar roles createdAt'
+    );
+
+    if (!userProfile) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      user: userProfile,
+    });
+  } catch (error) {
+    console.error('Error fetching profile:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch profile' 
+    });
+  }
+});
 
 // ─── GET /api/users/mongo-id/:clerkId ────────────────────────────────────────
 router.get('/mongo-id/:clerkId', requireAuth, async (req, res) => {

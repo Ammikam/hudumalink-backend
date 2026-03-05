@@ -1,3 +1,4 @@
+// backend/src/models/User.ts - COMPLETE UPDATED VERSION
 import mongoose, { Schema, Document } from 'mongoose';
 
 interface IReference {
@@ -13,15 +14,14 @@ interface ISocialLinks {
 }
 
 interface IUserPreferences {
-  styles?: string[];          // Preferred design styles
+  styles?: string[];
   budgetRange?: {
     min: number;
     max: number;
   };
-  locations?: string[];       // Preferred locations
+  locations?: string[];
 }
 
-// ✅ NEW: Review interface for embedded reviews
 interface IReview {
   clientName: string;
   clientAvatar?: string;
@@ -34,31 +34,25 @@ interface IReview {
 interface IDesignerProfile {
   status: 'pending' | 'approved' | 'rejected' | 'suspended';
   rejectionReason?: string;
-
   verified: boolean;
   superVerified: boolean;
-
   idNumber?: string;
   portfolioImages: string[];
   credentials: string[];
   references: IReference[];
-
   location: string;
   about: string;
   coverImage?: string;
-  tagline?: string; // ✅ Adding tagline field
+  tagline?: string;
   styles: string[];
   startingPrice: number;
   responseTime?: string;
   calendlyLink?: string;
   videoUrl?: string;
   socialLinks?: ISocialLinks;
-
   rating: number;
   reviewCount: number;
   projectsCompleted: number;
-  
-  // ✅ NEW: Embedded reviews array
   reviews?: IReview[];
 }
 
@@ -68,15 +62,17 @@ export interface IUser extends Document {
   name: string;
   phone?: string;
   avatar?: string;
-  preferences?: IUserPreferences
-
+  
+  // ✅ Client profile fields
+  location?: string;
+  bio?: string;
+  
+  preferences?: IUserPreferences;
   roles: ('client' | 'designer' | 'admin')[];
   designerProfile?: IDesignerProfile;
-
   banned: boolean;
   banReason?: string;
   bannedAt?: Date;
-
   createdAt: Date;
   updatedAt: Date;
 
@@ -96,7 +92,6 @@ const SocialLinksSchema = new Schema<ISocialLinks>({
   website: String,
 });
 
-// ✅ NEW: Review schema for embedded reviews
 const ReviewSchema = new Schema<IReview>({
   clientName: { type: String, required: true },
   clientAvatar: { type: String, default: '' },
@@ -118,26 +113,22 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
     default: 'pending',
   },
   rejectionReason: String,
-
   verified: { type: Boolean, default: false },
   superVerified: { type: Boolean, default: false },
-
   idNumber: String,
   portfolioImages: { type: [String], default: [] },
   credentials: { type: [String], default: [] },
   references: { type: [ReferenceSchema], default: [] },
-
   location: { type: String, default: '' },
   about: { type: String, default: '' },
   coverImage: String,
-  tagline: String, // ✅ Adding tagline field
+  tagline: String,
   styles: { type: [String], default: [] },
   startingPrice: { type: Number, default: 0 },
   responseTime: String,
   calendlyLink: String,
   videoUrl: String,
   socialLinks: SocialLinksSchema,
-
   rating: {
     type: Number,
     default: 0,
@@ -145,22 +136,9 @@ const DesignerProfileSchema = new Schema<IDesignerProfile>({
     max: 5,
     set: (val: number) => Math.round(val * 10) / 10,
   },
-  reviewCount: {
-    type: Number,
-    default: 0,
-    min: 0,
-  },
-  projectsCompleted: {
-    type: Number,
-    default: 0,
-    min: 0,
-  },
-  
-  // ✅ NEW: Embedded reviews array
-  reviews: {
-    type: [ReviewSchema],
-    default: [],
-  },
+  reviewCount: { type: Number, default: 0, min: 0 },
+  projectsCompleted: { type: Number, default: 0, min: 0 },
+  reviews: { type: [ReviewSchema], default: [] },
 });
 
 const UserPreferencesSchema = new Schema<IUserPreferences>({
@@ -179,23 +157,23 @@ const UserSchema = new Schema<IUser>(
     name: { type: String, required: true },
     phone: String,
     avatar: String,
+    
+    // ✅ Client profile fields
+    location: { type: String, default: '' },
+    bio: { type: String, default: '', maxlength: 500 },
 
     roles: {
       type: [String],
       enum: ['client', 'designer', 'admin'],
       default: ['client'],
     },
-
     banned: { type: Boolean, default: false },
     banReason: String,
     bannedAt: Date,
-
     designerProfile: DesignerProfileSchema,
     preferences: UserPreferencesSchema,
   },
-  {
-    timestamps: true, //  auto-manages createdAt & updatedAt
-  }
+  { timestamps: true }
 );
 
 UserSchema.index({ clerkId: 1 }, { unique: true });
@@ -206,6 +184,7 @@ UserSchema.index({ 'designerProfile.status': 1 });
 UserSchema.index({ 'designerProfile.rating': -1 });
 UserSchema.index({ 'designerProfile.reviewCount': -1 });
 UserSchema.index({ 'designerProfile.projectsCompleted': -1 });
+UserSchema.index({ 'preferences.styles': 1 });
 
 UserSchema.virtual('displayName').get(function () {
   if (this.designerProfile?.superVerified) return `${this.name} ⭐`;
@@ -226,12 +205,9 @@ UserSchema.methods.updateRating = async function (
   reviewCount: number
 ): Promise<void> {
   if (!this.designerProfile) return;
-
   this.designerProfile.rating = newRating;
   this.designerProfile.reviewCount = reviewCount;
   await this.save();
 };
-
-UserSchema.index({ 'preferences.styles': 1 });
 
 export default mongoose.model<IUser>('User', UserSchema);
