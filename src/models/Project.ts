@@ -1,4 +1,4 @@
-//src/models/Project.ts
+//src/models/Project.ts - UPDATED WITH PHOTO SEPARATION
 import mongoose, { Schema, Document } from 'mongoose';
 
 interface IClient {
@@ -25,6 +25,12 @@ interface IProject extends Document {
   timeline: string;
   styles: string[];
   photos: string[];
+  
+  // ✅ NEW: Separate photo arrays for before/after workflow
+  beforePhotos?: string[];           // Current space photos
+  inspirationPhotos?: string[];      // Vision/reference photos
+  inspirationNotes?: string;         // Client's vision description
+  
   client: IClient; 
   designer?: mongoose.Types.ObjectId | null;
   status: 'open' | 'in_progress' | 'completed';
@@ -53,6 +59,12 @@ const ProjectSchema = new Schema<IProject>({
   timeline: { type: String, required: true },
   styles: [{ type: String }],
   photos: [{ type: String }],
+  
+  // ✅ NEW: Separate photo arrays
+  beforePhotos: [{ type: String }],        // Photos of current space
+  inspirationPhotos: [{ type: String }],   // Reference/vision photos
+  inspirationNotes: { type: String },      // Text description of vision
+  
   client: { type: ClientSchema, required: true },
   designer: { type: Schema.Types.ObjectId, ref: 'User', default: null }, 
   status: { 
@@ -66,5 +78,6 @@ const ProjectSchema = new Schema<IProject>({
 
 // Index for faster queries by user
 ProjectSchema.index({ 'client.clerkId': 1 });
+ProjectSchema.index({ status: 1, createdAt: -1 }); // ✅ Added for open projects query
 
 export default mongoose.model<IProject>('Project', ProjectSchema);

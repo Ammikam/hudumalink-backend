@@ -1,4 +1,4 @@
-// backend/src/routes/projects.ts
+// backend/src/routes/projects.ts - COMPLETE UPDATED VERSION WITH PHOTO SEPARATION
 import express from 'express';
 import Project, { IProjectPopulated } from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
@@ -21,12 +21,22 @@ router.get('/', requireAuth, async (req: RequestWithUser, res) => {
       'client.clerkId': user.clerkId,
     })
       .populate('designer', 'name avatar')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // ✅ UPDATED: Transform to include separate photo arrays
+    const transformedProjects = projects.map(project => ({
+      ...project,
+      photos: project.photos || [],
+      beforePhotos: project.beforePhotos || [],
+      inspirationPhotos: project.inspirationPhotos || [],
+      inspirationNotes: project.inspirationNotes || '',
+    }));
 
     res.json({
       success: true,
-      projects,
-      count: projects.length,
+      projects: transformedProjects,
+      count: transformedProjects.length,
     });
   } catch (error) {
     console.error('Error fetching client projects:', error);
@@ -51,7 +61,6 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
 
     const [projects, total] = await Promise.all([
       Project.find()
-        // ✅ CHANGE 3: populate designer so admin panel shows real designer info
         .populate('designer', 'name avatar')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -76,8 +85,12 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
           name:   client.name,
           avatar: client.avatar  || null,
         },
-        // ✅ CHANGE 3: use real designer value instead of hardcoded null
         designer: project.designer ?? null,
+        // ✅ UPDATED: Include photo arrays
+        photos: project.photos || [],
+        beforePhotos: project.beforePhotos || [],
+        inspirationPhotos: project.inspirationPhotos || [],
+        inspirationNotes: project.inspirationNotes || '',
       };
     });
 
@@ -102,14 +115,22 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
 });
 
 // ─── Public open projects (for designers to browse) ──────────────────────────
-// ✅ CHANGE 1: removed .populate('client', 'name') — client is embedded in the
-//    document already, populate overwrites it and breaks OpenProjectsPage
 router.get('/open', async (_req, res) => {
   try {
     const projects = await Project.find({ status: 'open' })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    res.json(projects);
+    // ✅ UPDATED: Transform to include separate photo arrays
+    const transformedProjects = projects.map(project => ({
+      ...project,
+      photos: project.photos || [],
+      beforePhotos: project.beforePhotos || [],
+      inspirationPhotos: project.inspirationPhotos || [],
+      inspirationNotes: project.inspirationNotes || '',
+    }));
+
+    res.json(transformedProjects);
   } catch (error) {
     console.error('Error fetching open projects:', error);
     res.status(500).json({ error: 'Failed to fetch open projects' });
@@ -129,10 +150,19 @@ router.get('/my-active', requireAuth, async (req: RequestWithUser, res) => {
       designer: designerId,
       status:   'in_progress',
     })
-      .populate('client', 'name')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    res.json({ success: true, projects });
+    // ✅ UPDATED: Transform to include separate photo arrays
+    const transformedProjects = projects.map(project => ({
+      ...project,
+      photos: project.photos || [],
+      beforePhotos: project.beforePhotos || [],
+      inspirationPhotos: project.inspirationPhotos || [],
+      inspirationNotes: project.inspirationNotes || '',
+    }));
+
+    res.json({ success: true, projects: transformedProjects });
   } catch (error) {
     console.error('Error fetching active projects:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch active projects' });
@@ -197,14 +227,23 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
     project.status = 'completed';
     await project.save();
 
-    // ✅ CHANGE 2: re-fetch with populated designer so the response has
-    //    { name, avatar } instead of a raw ObjectId
+    // Re-fetch with populated designer
     const populated = await Project.findById(project._id)
-      .populate('designer', 'name avatar');
+      .populate('designer', 'name avatar')
+      .lean();
+
+    // ✅ UPDATED: Transform to include photo arrays
+    const transformed = {
+      ...populated,
+      photos: populated?.photos || [],
+      beforePhotos: populated?.beforePhotos || [],
+      inspirationPhotos: populated?.inspirationPhotos || [],
+      inspirationNotes: populated?.inspirationNotes || '',
+    };
 
     res.json({
       success: true,
-      project: populated,
+      project: transformed,
       message: 'Project marked as complete',
     });
   } catch (error) {
@@ -226,7 +265,8 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
     }
 
     const project = await Project.findById(req.params.id)
-      .populate('designer', 'name avatar');
+      .populate('designer', 'name avatar')
+      .lean();
 
     if (!project) {
       return res.status(404).json({ success: false, error: 'Project not found' });
@@ -244,7 +284,16 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
-    res.json({ success: true, project });
+    // ✅ UPDATED: Transform to include photo arrays
+    const transformed = {
+      ...project,
+      photos: project.photos || [],
+      beforePhotos: project.beforePhotos || [],
+      inspirationPhotos: project.inspirationPhotos || [],
+      inspirationNotes: project.inspirationNotes || '',
+    };
+
+    res.json({ success: true, project: transformed });
   } catch (error) {
     console.error('Error fetching project:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch project' });
@@ -259,10 +308,35 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   }
 
   try {
+    // ✅ UPDATED: Extract new photo fields from request
+    const {
+      title,
+      description,
+      location,
+      budget,
+      timeline,
+      styles,
+      photos,
+      beforePhotos,
+      inspirationPhotos,
+      inspirationNotes,
+      client,
+    } = req.body;
+
     const project = new Project({
-      ...req.body,
+      title,
+      description,
+      location,
+      budget,
+      timeline,
+      styles: styles || [],
+      photos: photos || [],
+      // ✅ NEW: Save separate photo arrays
+      beforePhotos: beforePhotos || [],
+      inspirationPhotos: inspirationPhotos || [],
+      inspirationNotes: inspirationNotes || '',
       client: {
-        ...req.body.client,
+        ...client,
         clerkId: user.clerkId,
       },
     });
@@ -298,7 +372,32 @@ router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    Object.assign(project, req.body);
+    // ✅ UPDATED: Handle new photo fields in updates
+    const {
+      title,
+      description,
+      location,
+      budget,
+      timeline,
+      styles,
+      photos,
+      beforePhotos,
+      inspirationPhotos,
+      inspirationNotes,
+    } = req.body;
+
+    if (title !== undefined) project.title = title;
+    if (description !== undefined) project.description = description;
+    if (location !== undefined) project.location = location;
+    if (budget !== undefined) project.budget = budget;
+    if (timeline !== undefined) project.timeline = timeline;
+    if (styles !== undefined) project.styles = styles;
+    if (photos !== undefined) project.photos = photos;
+    // ✅ NEW: Update photo arrays if provided
+    if (beforePhotos !== undefined) project.beforePhotos = beforePhotos;
+    if (inspirationPhotos !== undefined) project.inspirationPhotos = inspirationPhotos;
+    if (inspirationNotes !== undefined) project.inspirationNotes = inspirationNotes;
+
     await project.save();
 
     res.json({

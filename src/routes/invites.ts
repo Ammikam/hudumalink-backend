@@ -87,10 +87,10 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
       designer: user._id,
       status:   'pending',
     })
-      .populate({
-        path: 'project',
-        select: 'title description location budget timeline styles photos client createdAt',
-      })
+.populate({
+  path: 'project',
+  select: 'title description location budget timeline styles photos beforePhotos inspirationPhotos inspirationNotes client status createdAt',
+})
       .sort({ createdAt: -1 })
       .lean();
 
@@ -101,54 +101,141 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// ─── PATCH /api/invites/:id/accept ────────────────────────────────────────────
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-
   try {
-    const invite = await Invite.findById(req.params.id);
-    if (!invite) return res.status(404).json({ success: false, error: 'Invite not found' });
-
-    if (invite.designer.toString() !== user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Access denied' });
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
+    // Fetch the invite with project details
+    const invite = await Invite.findById(req.params.id).populate('project');
+    
+    if (!invite) {
+      return res.status(404).json({ success: false, error: 'Invite not found' });
+    }
+    
+    // Check authorization - only the invited designer can accept
+    if (invite.designer.toString() !== user._id.toString()) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'You are not authorized to accept this invite' 
+      });
+    }
+    
+    // Check if invite is still pending
+    if (invite.status !== 'pending') {
+      return res.status(400).json({ 
+        success: false, 
+        error: `This invite has already been ${invite.status}` 
+      });
+    }
+    
+    // ✅ FIX 1: Update invite status
     invite.status = 'accepted';
-    invite.respondedAt = new Date();
     await invite.save();
+    
+    // ✅ FIX 2: Assign designer to project and change status
+    const project = await Project.findById(invite.project);
+    if (!project) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Project not found' 
+      });
+    }
 
-    // Return the project details so the designer can navigate to the proposal form
-    const project = await Project.findById(invite.project).lean();
-
-    res.json({ success: true, invite, project });
-  } catch (err) {
-    console.error('[invites/accept]', err);
-    res.status(500).json({ success: false, error: 'Failed to accept invite' });
+    // Check if project is still available
+    if (project.status !== 'open') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'This project is no longer available' 
+      });
+    }
+    
+    // Assign designer and update status
+    project.designer = user._id;
+    project.status = 'in_progress';
+    await project.save();
+    
+    // ✅ FIX 3: Auto-decline all other pending invites for this project
+    await Invite.updateMany(
+      { 
+        project: invite.project,
+        _id: { $ne: invite._id },
+        status: 'pending'
+      },
+      { 
+        status: 'declined',
+        // Optional: Add decline reason
+        declineReason: 'Project assigned to another designer'
+      }
+    );
+    
+    // Fetch updated project with designer info
+    const updatedProject = await Project.findById(project._id)
+      .populate('designer', 'name avatar');
+    
+    res.json({ 
+      success: true, 
+      message: 'Invite accepted! Project assigned successfully.',
+      invite,
+      project: updatedProject
+    });
+    
+  } catch (error) {
+    console.error('Error accepting invite:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to accept invite. Please try again.' 
+    });
   }
 });
 
-// ─── PATCH /api/invites/:id/decline ───────────────────────────────────────────
+// ✅ BONUS: Also update the decline route for completeness
 router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-
   try {
-    const invite = await Invite.findById(req.params.id);
-    if (!invite) return res.status(404).json({ success: false, error: 'Invite not found' });
-
-    if (invite.designer.toString() !== user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Access denied' });
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
+    const invite = await Invite.findById(req.params.id);
+    
+    if (!invite) {
+      return res.status(404).json({ success: false, error: 'Invite not found' });
+    }
+    
+    // Check authorization
+    if (invite.designer.toString() !== user._id.toString()) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'You are not authorized to decline this invite' 
+      });
+    }
+    
+    // Check if invite is still pending
+    if (invite.status !== 'pending') {
+      return res.status(400).json({ 
+        success: false, 
+        error: `This invite has already been ${invite.status}` 
+      });
+    }
+    
     invite.status = 'declined';
-    invite.respondedAt = new Date();
     await invite.save();
-
-    res.json({ success: true, invite });
-  } catch (err) {
-    console.error('[invites/decline]', err);
-    res.status(500).json({ success: false, error: 'Failed to decline invite' });
+    
+    res.json({ 
+      success: true, 
+      message: 'Invite declined.',
+      invite
+    });
+    
+  } catch (error) {
+    console.error('Error declining invite:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to decline invite. Please try again.' 
+    });
   }
 });
 
