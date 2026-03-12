@@ -1,4 +1,4 @@
-// backend/src/routes/invites.ts
+// backend/src/routes/invites.ts - UPDATED FOR currentPhotos
 import express from 'express';
 import mongoose, { Schema, Document } from 'mongoose';
 import { requireAuth } from '../middlewares/auth';
@@ -31,7 +31,6 @@ const Invite = mongoose.models.Invite || mongoose.model<IInvite>('Invite', Invit
 const router = express.Router();
 
 // ─── POST /api/invites ────────────────────────────────────────────────────────
-// Create an invite when a client posts a project targeting a specific designer
 router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -43,7 +42,6 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   }
 
   try {
-    // Verify the project belongs to this client
     const project = await Project.findById(projectId);
     if (!project) {
       return res.status(404).json({ success: false, error: 'Project not found' });
@@ -52,13 +50,11 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(403).json({ success: false, error: 'You can only invite designers to your own projects' });
     }
 
-    // Verify the designer exists
     const designer = await User.findById(designerId);
     if (!designer || !designer.roles.includes('designer')) {
       return res.status(404).json({ success: false, error: 'Designer not found' });
     }
 
-    // Create or update the invite (upsert to handle duplicate attempts gracefully)
     const invite = await Invite.findOneAndUpdate(
       { project: projectId, designer: designerId },
       { $setOnInsert: { status: 'pending' } },
@@ -68,7 +64,6 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
     res.status(201).json({ success: true, invite });
   } catch (err: any) {
     console.error('[invites POST]', err);
-    // Handle duplicate key error gracefully
     if (err.code === 11000) {
       return res.status(200).json({ success: true, message: 'Invite already exists' });
     }
@@ -77,7 +72,6 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
 });
 
 // ─── GET /api/invites/my ──────────────────────────────────────────────────────
-// Get all pending invites for the current designer
 router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -85,22 +79,38 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const invites = await Invite.find({
       designer: user._id,
-      status:   'pending',
+      status: 'pending',
     })
-.populate({
-  path: 'project',
-  select: 'title description location budget timeline styles photos beforePhotos inspirationPhotos inspirationNotes client status createdAt',
-})
+      .populate({
+        path: 'project',
+        // ✅ UPDATED: Include currentPhotos in select
+        select: 'title description location budget timeline styles photos currentPhotos beforePhotos inspirationPhotos inspirationNotes afterPhotos client status createdAt',
+      })
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json({ success: true, invites });
+    // ✅ Transform projects to include currentPhotos fallback
+    const transformedInvites = invites.map(invite => ({
+      ...invite,
+      project: invite.project ? {
+        ...invite.project,
+        currentPhotos: (invite.project as any).currentPhotos || (invite.project as any).beforePhotos || [],
+        beforePhotos: (invite.project as any).beforePhotos || [],
+        inspirationPhotos: (invite.project as any).inspirationPhotos || [],
+        inspirationNotes: (invite.project as any).inspirationNotes || '',
+        afterPhotos: (invite.project as any).afterPhotos || [],
+        photos: (invite.project as any).photos || [],
+      } : null,
+    }));
+
+    res.json({ success: true, invites: transformedInvites });
   } catch (err) {
     console.error('[invites/my]', err);
     res.status(500).json({ success: false, error: 'Failed to fetch invites' });
   }
 });
 
+// ─── PATCH /api/invites/:id/accept ────────────────────────────────────────────
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
@@ -108,14 +118,12 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    // Fetch the invite with project details
     const invite = await Invite.findById(req.params.id).populate('project');
     
     if (!invite) {
       return res.status(404).json({ success: false, error: 'Invite not found' });
     }
     
-    // Check authorization - only the invited designer can accept
     if (invite.designer.toString() !== user._id.toString()) {
       return res.status(403).json({ 
         success: false, 
@@ -123,7 +131,6 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
     
-    // Check if invite is still pending
     if (invite.status !== 'pending') {
       return res.status(400).json({ 
         success: false, 
@@ -131,11 +138,10 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
     
-    // ✅ FIX 1: Update invite status
     invite.status = 'accepted';
+    invite.respondedAt = new Date();
     await invite.save();
     
-    // ✅ FIX 2: Assign designer to project and change status
     const project = await Project.findById(invite.project);
     if (!project) {
       return res.status(404).json({ 
@@ -144,7 +150,6 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
-    // Check if project is still available
     if (project.status !== 'open') {
       return res.status(400).json({ 
         success: false, 
@@ -152,12 +157,10 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
     
-    // Assign designer and update status
     project.designer = user._id;
     project.status = 'in_progress';
     await project.save();
     
-    // ✅ FIX 3: Auto-decline all other pending invites for this project
     await Invite.updateMany(
       { 
         project: invite.project,
@@ -166,20 +169,30 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       },
       { 
         status: 'declined',
-        // Optional: Add decline reason
-        declineReason: 'Project assigned to another designer'
+        respondedAt: new Date(),
       }
     );
     
-    // Fetch updated project with designer info
     const updatedProject = await Project.findById(project._id)
-      .populate('designer', 'name avatar');
+      .populate('designer', 'name avatar')
+      .lean();
+    
+    // ✅ Transform project with currentPhotos
+    const transformedProject = updatedProject ? {
+      ...updatedProject,
+      currentPhotos: updatedProject.currentPhotos || updatedProject.beforePhotos || [],
+      beforePhotos: updatedProject.beforePhotos || [],
+      inspirationPhotos: updatedProject.inspirationPhotos || [],
+      inspirationNotes: updatedProject.inspirationNotes || '',
+      afterPhotos: updatedProject.afterPhotos || [],
+      photos: updatedProject.photos || [],
+    } : null;
     
     res.json({ 
       success: true, 
       message: 'Invite accepted! Project assigned successfully.',
       invite,
-      project: updatedProject
+      project: transformedProject
     });
     
   } catch (error) {
@@ -191,7 +204,7 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// ✅ BONUS: Also update the decline route for completeness
+// ─── PATCH /api/invites/:id/decline ───────────────────────────────────────────
 router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
@@ -205,7 +218,6 @@ router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(404).json({ success: false, error: 'Invite not found' });
     }
     
-    // Check authorization
     if (invite.designer.toString() !== user._id.toString()) {
       return res.status(403).json({ 
         success: false, 
@@ -213,7 +225,6 @@ router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
     
-    // Check if invite is still pending
     if (invite.status !== 'pending') {
       return res.status(400).json({ 
         success: false, 
@@ -222,6 +233,7 @@ router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
     }
     
     invite.status = 'declined';
+    invite.respondedAt = new Date();
     await invite.save();
     
     res.json({ 
