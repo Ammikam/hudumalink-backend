@@ -20,6 +20,7 @@ import messagesRouter from './routes/messages';
 import statsRouter from './routes/stats';
 import invitesRouter from './routes/invites';
 import inspirationsRouter from './routes/Inspirations';
+import paymentRoutes from './routes/payments';
 
 
 dotenv.config();
@@ -64,6 +65,8 @@ app.use('/api/messages', messagesRouter);
 app.use('/api/stats', statsRouter);
 app.use('/api/invites', invitesRouter);
 app.use('/api/inspirations', inspirationsRouter);
+app.use('/api/payments', paymentRoutes);
+
 
 // Get user by clerkId
 app.get('/api/users/:clerkId', async (req, res) => {

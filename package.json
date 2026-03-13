@@ -17,6 +17,7 @@
     "@clerk/clerk-sdk-node": "^4.13.23",
     "@types/multer": "^2.0.0",
     "@types/streamifier": "^0.1.2",
+    "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.5",
