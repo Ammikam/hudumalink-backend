@@ -9,7 +9,6 @@ import mpesaService from '../services/mpesa.service';
 
 const router = express.Router();
 
-// Platform fee percentage (10%)
 const PLATFORM_FEE_PERCENT = 0.10;
 
 // ─── Initiate Payment (Client) ───────────────────────────────────────────────
@@ -20,15 +19,13 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const { projectId, amount, phoneNumber, paymentMethod } = req.body;
 
-    // Validate
     if (!projectId || !amount || !phoneNumber) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Project ID, amount, and phone number are required' 
+      return res.status(400).json({
+        success: false,
+        error: 'Project ID, amount, and phone number are required',
       });
     }
 
-    // Get project
     const project = await Project.findById(projectId);
     if (!project) {
       return res.status(404).json({ success: false, error: 'Project not found' });
@@ -39,9 +36,36 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
 
-    // Verify project has designer
+    // Project must be in payment_pending state
+    if (project.status !== 'payment_pending') {
+      return res.status(400).json({
+        success: false,
+        error: project.status === 'in_progress'
+          ? 'This project has already been paid for'
+          : 'Project is not ready for payment',
+      });
+    }
+
+    // Must have a designer assigned
     if (!project.designer) {
-      return res.status(400).json({ success: false, error: 'Project must have assigned designer' });
+      return res.status(400).json({
+        success: false,
+        error: 'Project must have an assigned designer before payment',
+      });
+    }
+
+    // Block duplicate payments — check if a held/pending payment already exists
+    const existingPayment = await Payment.findOne({
+      project: projectId,
+      status: { $in: ['pending', 'held'] },
+    });
+
+    if (existingPayment) {
+      return res.status(400).json({
+        success: false,
+        error: 'A payment for this project is already in progress',
+        paymentId: existingPayment._id,
+      });
     }
 
     // Calculate fees
@@ -66,17 +90,16 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
     await payment.save();
 
     // Initiate M-Pesa STK Push
-    if (paymentMethod === 'mpesa') {
+    if (!paymentMethod || paymentMethod === 'mpesa') {
       try {
         const stkResponse = await mpesaService.stkPush({
-          phoneNumber,
-          amount: totalAmount,
-          accountReference: `PRJ-${projectId.toString().slice(-8)}`,
-          transactionDesc: `Payment for ${project.title}`,
-          callbackUrl: `${process.env.BASE_URL}/api/payments/mpesa/callback`,
-        });
+  phoneNumber,
+  amount: totalAmount,
+  accountReference: `PRJ-${projectId.toString().slice(-8)}`,
+  transactionDesc: 'Project Payment', 
+  callbackUrl: `${process.env.BASE_URL}/api/payments/mpesa/callback`,
+});
 
-        // Update payment with M-Pesa details
         payment.mpesaCheckoutRequestID = stkResponse.CheckoutRequestID;
         await payment.save();
 
@@ -97,7 +120,7 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
       } catch (mpesaError: any) {
         payment.status = 'failed';
         await payment.save();
-        
+
         return res.status(400).json({
           success: false,
           error: mpesaError.message || 'M-Pesa payment failed',
@@ -126,34 +149,38 @@ router.post('/mpesa/callback', async (req, res) => {
     const checkoutRequestID = stkCallback.CheckoutRequestID;
     const resultCode = stkCallback.ResultCode;
 
-    // Find payment
     const payment = await Payment.findOne({ mpesaCheckoutRequestID: checkoutRequestID });
     if (!payment) {
       console.error('Payment not found for CheckoutRequestID:', checkoutRequestID);
       return res.status(404).json({ success: false, error: 'Payment not found' });
     }
 
-    // Payment successful
     if (resultCode === 0) {
+      // ── Payment successful ──────────────────────────────────────────────────
       const callbackMetadata = stkCallback.CallbackMetadata?.Item || [];
-      const receiptNumber = callbackMetadata.find((item: any) => item.Name === 'MpesaReceiptNumber')?.Value;
+      const receiptNumber = callbackMetadata.find(
+        (item: any) => item.Name === 'MpesaReceiptNumber'
+      )?.Value;
 
-      payment.status = 'held'; // Money is now held in escrow
+      payment.status = 'held';
       payment.heldAt = new Date();
       payment.mpesaReceiptNumber = receiptNumber;
       payment.metadata = stkCallback;
-
       await payment.save();
 
-      console.log(`✅ Payment ${payment._id} successful. Amount held in escrow.`);
-    } 
-    // Payment failed
-    else {
+      // ✅ STEP 3 CHANGE: Unlock project now that funds are secured
+      await Project.findByIdAndUpdate(payment.project, {
+        status: 'in_progress',
+      });
+
+      console.log(`✅ Payment ${payment._id} held in escrow. Project ${payment.project} unlocked → in_progress.`);
+    } else {
+      // ── Payment failed ──────────────────────────────────────────────────────
       payment.status = 'failed';
       payment.metadata = stkCallback;
       await payment.save();
 
-      console.log(`❌ Payment ${payment._id} failed. Code: ${resultCode}`);
+      console.log(`❌ Payment ${payment._id} failed. Code: ${resultCode}. Project remains payment_pending.`);
     }
 
     // Always return 200 to M-Pesa
@@ -161,6 +188,42 @@ router.post('/mpesa/callback', async (req, res) => {
   } catch (error) {
     console.error('M-Pesa callback error:', error);
     res.status(200).json({ success: true }); // Still return 200
+  }
+});
+
+// ─── Get Payment by Project ID ────────────────────────────────────────────────
+// ✅ NEW: Frontend needs this to find paymentId for release/status checks
+router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+  try {
+    const payment = await Payment.findOne({
+      project: req.params.projectId,
+      status: { $in: ['pending', 'held', 'released'] },
+    })
+      .populate('project', 'title status')
+      .populate('designer', 'name avatar')
+      .sort({ createdAt: -1 });
+
+    if (!payment) {
+      return res.json({ success: true, payment: null });
+    }
+
+    // Only client, designer, or admin can see payment
+    const isClient = payment.client.toString() === user._id.toString();
+    const isDesigner = payment.designer._id
+      ? payment.designer._id.toString() === user._id.toString()
+      : payment.designer.toString() === user._id.toString();
+
+    if (!isClient && !isDesigner && !user.isAdmin) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    res.json({ success: true, payment });
+  } catch (error) {
+    console.error('Get payment by project error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch payment' });
   }
 });
 
@@ -178,7 +241,6 @@ router.get('/status/:paymentId', requireAuth, async (req: RequestWithUser, res) 
       return res.status(404).json({ success: false, error: 'Payment not found' });
     }
 
-    // Verify user is client or designer
     const isClient = payment.client.toString() === user._id.toString();
     const isDesigner = payment.designer.toString() === user._id.toString();
 
@@ -204,30 +266,26 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
       return res.status(404).json({ success: false, error: 'Payment not found' });
     }
 
-    // Only client or admin can release payment
     const isClient = payment.client.toString() === user._id.toString();
     if (!isClient && !user.isAdmin) {
       return res.status(403).json({ success: false, error: 'Only client can release payment' });
     }
 
-    // Payment must be held
     if (payment.status !== 'held') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Cannot release payment with status: ${payment.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Cannot release payment with status: ${payment.status}`,
       });
     }
 
-    // Get designer info
     const designer = await User.findById(payment.designer);
     if (!designer || !designer.phone) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Designer phone number not found' 
+      return res.status(400).json({
+        success: false,
+        error: 'Designer phone number not found',
       });
     }
 
-    // Send B2C payment to designer
     try {
       const b2cResponse = await mpesaService.b2cPayment(
         designer.phone,
@@ -262,7 +320,6 @@ router.post('/refund/:paymentId', requireAuth, async (req: RequestWithUser, res)
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-  // Only admins can refund
   if (!user.isAdmin) {
     return res.status(403).json({ success: false, error: 'Admin only' });
   }
@@ -274,26 +331,24 @@ router.post('/refund/:paymentId', requireAuth, async (req: RequestWithUser, res)
     }
 
     if (payment.status !== 'held') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Cannot refund payment with status: ${payment.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Cannot refund payment with status: ${payment.status}`,
       });
     }
 
-    // Get client info
     const client = await User.findById(payment.client);
     if (!client || !client.phone) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Client phone number not found' 
+      return res.status(400).json({
+        success: false,
+        error: 'Client phone number not found',
       });
     }
 
-    // Send refund via B2C
     try {
       const refundResponse = await mpesaService.b2cPayment(
         client.phone,
-        payment.amount, // Full refund
+        payment.amount,
         `Refund for project payment`
       );
 
@@ -325,14 +380,9 @@ router.get('/my-payments', requireAuth, async (req: RequestWithUser, res) => {
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
-    const query: any = {
-      $or: [
-        { client: user._id },
-        { designer: user._id },
-      ],
-    };
-
-    const payments = await Payment.find(query)
+    const payments = await Payment.find({
+      $or: [{ client: user._id }, { designer: user._id }],
+    })
       .populate('project', 'title')
       .populate('client', 'name')
       .populate('designer', 'name')

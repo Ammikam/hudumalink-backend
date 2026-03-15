@@ -30,19 +30,19 @@ class MpesaService {
   private config: MpesaConfig;
   private baseUrl: string;
 
-  constructor() {
-    this.config = {
-      consumerKey: process.env.MPESA_CONSUMER_KEY || '',
-      consumerSecret: process.env.MPESA_CONSUMER_SECRET || '',
-      passkey: process.env.MPESA_PASSKEY || '',
-      shortcode: process.env.MPESA_SHORTCODE || '',
-      environment: (process.env.MPESA_ENVIRONMENT as 'sandbox' | 'production') || 'sandbox',
-    };
+ constructor() {
+  this.config = {
+    consumerKey:    (process.env.MPESA_CONSUMER_KEY     || '').trim(),
+    consumerSecret: (process.env.MPESA_CONSUMER_SECRET  || '').trim(),
+    passkey:        (process.env.MPESA_PASSKEY           || '').trim(),
+    shortcode:      (process.env.MPESA_SHORTCODE         || '').trim(),
+    environment:    (process.env.MPESA_ENVIRONMENT as 'sandbox' | 'production') || 'sandbox',
+  };
 
-    this.baseUrl = this.config.environment === 'production'
-      ? 'https://api.safaricom.co.ke'
-      : 'https://sandbox.safaricom.co.ke';
-  }
+  this.baseUrl = this.config.environment === 'production'
+    ? 'https://api.safaricom.co.ke'
+    : 'https://sandbox.safaricom.co.ke';
+}
 
   /**
    * Get OAuth access token from Daraja API
@@ -113,43 +113,55 @@ class MpesaService {
   /**
    * Initiate STK Push (Lipa Na M-Pesa Online)
    */
-  async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
-    try {
-      const accessToken = await this.getAccessToken();
-      const { password, timestamp } = this.generatePassword();
-      const phoneNumber = this.formatPhoneNumber(request.phoneNumber);
+async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
+  try {
+    const accessToken = await this.getAccessToken();
+    const { password, timestamp } = this.generatePassword();
+    const phoneNumber = this.formatPhoneNumber(request.phoneNumber);
 
-      const payload = {
-        BusinessShortCode: this.config.shortcode,
-        Password: password,
-        Timestamp: timestamp,
-        TransactionType: 'CustomerPayBillOnline',
-        Amount: Math.round(request.amount), // Must be integer
-        PartyA: phoneNumber,
-        PartyB: this.config.shortcode,
-        PhoneNumber: phoneNumber,
-        CallBackURL: request.callbackUrl,
-        AccountReference: request.accountReference,
-        TransactionDesc: request.transactionDesc,
-      };
+    // ✅ Strip characters that break Safaricom's XML transformer
+    const sanitize = (str: string) =>
+      str
+        .replace(/&/g, 'and')   // & breaks XML parsing
+        .replace(/</g, '')       // < breaks XML
+        .replace(/>/g, '')       // > breaks XML
+        .replace(/"/g, '')       // quotes can break attributes
+        .replace(/'/g, '')       // single quotes too
+        .slice(0, 100);          // Safaricom has a max length
 
-      const response = await axios.post(
-        `${this.baseUrl}/mpesa/stkpush/v1/processrequest`,
-        payload,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
+    const payload = {
+      BusinessShortCode: this.config.shortcode,
+      Password: password,
+      Timestamp: timestamp,
+      TransactionType: 'CustomerPayBillOnline',
+      Amount: Math.round(request.amount),
+      PartyA: phoneNumber,
+      PartyB: this.config.shortcode,
+      PhoneNumber: phoneNumber,
+      CallBackURL: request.callbackUrl,
+      AccountReference: sanitize(request.accountReference).slice(0, 12), // max 12 chars
+      TransactionDesc: sanitize(request.transactionDesc).slice(0, 13),    // max 13 chars
+    };
 
-      return response.data;
-    } catch (error: any) {
-      console.error('STK Push Error:', error.response?.data || error.message);
-      throw new Error(error.response?.data?.errorMessage || 'Failed to initiate M-Pesa payment');
-    }
+    console.log('STK Push payload:', JSON.stringify(payload, null, 2));
+
+    const response = await axios.post(
+      `${this.baseUrl}/mpesa/stkpush/v1/processrequest`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    return response.data;
+  } catch (error: any) {
+    console.error('STK Push Error full:', JSON.stringify(error.response?.data, null, 2));
+    throw new Error(error.response?.data?.errorMessage || 'Failed to initiate M-Pesa payment');
   }
+}
 
   /**
    * Query STK Push transaction status

@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
-// ─── Helper: Get Invite model (same schema as invites.ts) ────────────────────
+// ─── Helper: Get Invite model ────────────────────────────────────────────────
 const InviteSchema = new mongoose.Schema({
   project:  { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
   designer: { type: mongoose.Schema.Types.ObjectId, ref: 'User',    required: true, index: true },
@@ -19,12 +19,11 @@ const InviteSchema = new mongoose.Schema({
 InviteSchema.index({ project: 1, designer: 1 }, { unique: true });
 const Invite = mongoose.models.Invite || mongoose.model('Invite', InviteSchema);
 
-// POST /api/proposals
+// ─── POST /api/proposals ─────────────────────────────────────────────────────
 router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const { projectId, message, price, timeline } = req.body;
 
-    // Validation
     if (!projectId || !message?.trim() || !price || !timeline?.trim()) {
       return res.status(400).json({
         success: false,
@@ -34,28 +33,22 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
 
     const designerId = req.user?._id;
     if (!designerId) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required',
-      });
+      return res.status(401).json({ success: false, error: 'Authentication required' });
     }
 
-    // ✅ NEW: Check if there's a pending invite for this project-designer pair
+    // Auto-accept pending invite if one exists
     const existingInvite = await Invite.findOne({
       project: projectId,
       designer: designerId,
       status: 'pending',
     });
 
-    // If there's a pending invite, auto-accept it when they send a proposal
     if (existingInvite) {
       existingInvite.status = 'accepted';
       existingInvite.respondedAt = new Date();
       await existingInvite.save();
-      console.log(`✅ Auto-accepted invite ${existingInvite._id} for designer ${designerId} on project ${projectId}`);
     }
 
-    // Create proposal
     const proposal = new Proposal({
       project: projectId,
       designer: designerId,
@@ -66,8 +59,6 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
     });
 
     await proposal.save();
-
-    // Populate designer info for response
     await proposal.populate('designer', 'name avatar phone');
 
     return res.json({
@@ -78,14 +69,12 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
         : 'Proposal sent successfully!',
     });
   } catch (error: any) {
-    // Handle duplicate proposal (from unique index)
     if (error.code === 11000) {
       return res.status(400).json({
         success: false,
         error: 'You have already sent a proposal for this project',
       });
     }
-
     console.error('Proposal creation error:', error);
     return res.status(500).json({
       success: false,
@@ -95,7 +84,7 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// GET /api/proposals/my - My proposals
+// ─── GET /api/proposals/my ───────────────────────────────────────────────────
 router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const designerId = req.user?._id;
@@ -104,27 +93,19 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
     }
 
     const proposals = await Proposal.find({ designer: designerId })
-      .populate('project', 'title description budget timeline')
+      .populate('project', 'title description budget timeline status')
       .sort({ createdAt: -1 });
 
-    res.json({
-      success: true,
-      proposals,
-    });
+    res.json({ success: true, proposals });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch proposals',
-    });
+    res.status(500).json({ success: false, error: 'Failed to fetch proposals' });
   }
 });
 
-// GET /api/proposals/project/:projectId - Client sees proposals for their project
+// ─── GET /api/proposals/project/:projectId ───────────────────────────────────
 router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res) => {
   try {
-    const projectId = req.params.projectId;
-
-    const proposals = await Proposal.find({ project: projectId })
+    const proposals = await Proposal.find({ project: req.params.projectId })
       .populate('designer', 'name avatar phone')
       .sort({ createdAt: -1 });
 
@@ -135,12 +116,10 @@ router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res)
   }
 });
 
-// PATCH /api/proposals/:id/accept
+// ─── PATCH /api/proposals/:id/accept ────────────────────────────────────────
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   try {
-    const proposalId = req.params.id;
-
-    const proposal = await Proposal.findById(proposalId)
+    const proposal = await Proposal.findById(req.params.id)
       .populate('project')
       .populate('designer');
 
@@ -150,25 +129,23 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
 
     // Ownership check
     const projectClientClerkId = (proposal.project as any).client?.clerkId;
-    const currentUserClerkId = req.user?.clerkId;
-
-    if (projectClientClerkId !== currentUserClerkId) {
+    if (projectClientClerkId !== req.user?.clerkId) {
       return res.status(403).json({
         success: false,
         error: 'Access denied: You can only accept proposals for your own projects',
       });
     }
 
-    // Accept the chosen proposal
+    // Accept this proposal
     proposal.status = 'accepted';
     await proposal.save();
 
-    // AUTO-REJECT ALL OTHER PROPOSALS FOR THIS PROJECT
+    // Auto-reject all other pending proposals for this project
     await Proposal.updateMany(
       {
-        project: proposal.project._id,
-        _id: { $ne: proposal._id }, // exclude the accepted one
-        status: 'pending', // only pending ones
+        project: (proposal.project as any)._id,
+        _id: { $ne: proposal._id },
+        status: 'pending',
       },
       {
         status: 'rejected',
@@ -176,15 +153,17 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       }
     );
 
-    // Update project status and assign designer
-    await Project.findByIdAndUpdate(proposal.project._id, {
-      status: 'in_progress',
-      designer: proposal.designer._id,
+    // ✅ STEP 2 CHANGE: Set status to payment_pending instead of in_progress
+    // Designer is assigned but project is locked until client pays
+    await Project.findByIdAndUpdate((proposal.project as any)._id, {
+      status: 'payment_pending',
+      designer: (proposal.designer as any)._id,
     });
 
     res.json({
       success: true,
-      message: 'Designer hired successfully! Other proposals have been rejected.',
+      message: 'Designer hired! Please complete payment to start the project.',
+      projectId: (proposal.project as any)._id,
     });
   } catch (error: any) {
     console.error('Accept proposal error:', error);
@@ -196,46 +175,32 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   }
 });
 
-// PATCH /api/proposals/:id/reject
+// ─── PATCH /api/proposals/:id/reject ────────────────────────────────────────
 router.patch('/:id/reject', requireAuth, async (req: RequestWithUser, res) => {
   try {
-    const proposalId = req.params.id;
-    const { reason } = req.body; // Optional reason
+    const { reason } = req.body;
 
-    // Find proposal and populate project (to get client)
-    const proposal = await Proposal.findById(proposalId)
-      .populate('project'); // populate full project
+    const proposal = await Proposal.findById(req.params.id)
+      .populate('project');
 
     if (!proposal) {
       return res.status(404).json({ success: false, error: 'Proposal not found' });
     }
 
-    // Type assertion because populate doesn't change TS type
     const project = proposal.project as any;
 
-    // Ownership check — only project owner can reject
-    const projectClientClerkId = project?.client?.clerkId;
-    const currentUserClerkId = req.user?.clerkId;
-
-    if (projectClientClerkId !== currentUserClerkId) {
+    if (project?.client?.clerkId !== req.user?.clerkId) {
       return res.status(403).json({
         success: false,
         error: 'Access denied: You can only reject proposals for your own projects',
       });
     }
 
-    // Reject the proposal
     proposal.status = 'rejected';
-    if (reason?.trim()) {
-      proposal.rejectionReason = reason.trim();
-    }
+    if (reason?.trim()) proposal.rejectionReason = reason.trim();
     await proposal.save();
 
-    res.json({
-      success: true,
-      message: 'Proposal rejected successfully',
-      proposal,
-    });
+    res.json({ success: true, message: 'Proposal rejected successfully', proposal });
   } catch (error: any) {
     console.error('Reject proposal error:', error);
     res.status(500).json({

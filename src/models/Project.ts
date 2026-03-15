@@ -1,4 +1,4 @@
-// backend/src/models/Project.ts - FIXED VERSION
+// backend/src/models/Project.ts
 
 import mongoose, { Schema, Document } from 'mongoose';
 
@@ -9,12 +9,12 @@ export interface IProject extends Document {
   budget: number;
   timeline: string;
   styles: string[];
-  status: 'open' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'open' | 'payment_pending' | 'in_progress' | 'completed' | 'cancelled';
   
-  // ✅ NEW: Current photos (replaces beforePhotos conceptually)
+  // Current photos (replaces beforePhotos conceptually)
   currentPhotos: string[];
   
-  // ✅ KEEP: For backwards compatibility during transition
+  // For backwards compatibility during transition
   beforePhotos?: string[];
   
   // Inspiration photos (how client wants it to look)
@@ -70,17 +70,17 @@ const projectSchema = new Schema<IProject>(
     },
     status: {
       type: String,
-      enum: ['open', 'in_progress', 'completed', 'cancelled'],
+      enum: ['open', 'payment_pending', 'in_progress', 'completed', 'cancelled'],
       default: 'open',
     },
     
-    // ✅ NEW: Current space photos (primary field going forward)
+    // Current space photos (primary field going forward)
     currentPhotos: {
       type: [String],
       default: [],
     },
     
-    // ✅ DEPRECATED: Keep for backwards compatibility
+    // DEPRECATED: Keep for backwards compatibility
     beforePhotos: {
       type: [String],
       default: [],
@@ -126,14 +126,12 @@ const projectSchema = new Schema<IProject>(
   }
 );
 
-// ✅ Pre-save hook: If currentPhotos is empty but beforePhotos has data, copy it
-// FIX: Use void return type instead of next() callback
+// Pre-save hook: If currentPhotos is empty but beforePhotos has data, copy it
 projectSchema.pre('save', function() {
   if ((!this.currentPhotos || this.currentPhotos.length === 0) && 
       this.beforePhotos && this.beforePhotos.length > 0) {
     this.currentPhotos = this.beforePhotos;
   }
-  // No next() needed - just return void
 });
 
 export default mongoose.model<IProject>('Project', projectSchema);

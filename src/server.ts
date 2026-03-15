@@ -6,6 +6,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io'; 
 import { v2 as cloudinary } from 'cloudinary';
 import dotenv from 'dotenv';
+dotenv.config();
 
 import projectRoutes from './routes/Projects';
 import designerRoutes from './routes/Designers';
@@ -23,7 +24,7 @@ import inspirationsRouter from './routes/Inspirations';
 import paymentRoutes from './routes/payments';
 
 
-dotenv.config();
+
 
 const app = express();
 const httpServer = createServer(app); 
