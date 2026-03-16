@@ -1,6 +1,5 @@
 // backend/src/services/mpesa.service.ts
 import axios from 'axios';
-import * as crypto from 'crypto';
 
 interface MpesaConfig {
   consumerKey: string;
@@ -30,23 +29,32 @@ class MpesaService {
   private config: MpesaConfig;
   private baseUrl: string;
 
- constructor() {
-  this.config = {
-    consumerKey:    (process.env.MPESA_CONSUMER_KEY     || '').trim(),
-    consumerSecret: (process.env.MPESA_CONSUMER_SECRET  || '').trim(),
-    passkey:        (process.env.MPESA_PASSKEY           || '').trim(),
-    shortcode:      (process.env.MPESA_SHORTCODE         || '').trim(),
-    environment:    (process.env.MPESA_ENVIRONMENT as 'sandbox' | 'production') || 'sandbox',
-  };
+  constructor() {
+    this.config = {
+      consumerKey:    (process.env.MPESA_CONSUMER_KEY    || '').trim(),
+      consumerSecret: (process.env.MPESA_CONSUMER_SECRET || '').trim(),
+      passkey:        (process.env.MPESA_PASSKEY         || '').trim(),
+      shortcode:      (process.env.MPESA_SHORTCODE       || '').trim(),
+      environment:    (process.env.MPESA_ENVIRONMENT as 'sandbox' | 'production') || 'sandbox',
+    };
 
-  this.baseUrl = this.config.environment === 'production'
-    ? 'https://api.safaricom.co.ke'
-    : 'https://sandbox.safaricom.co.ke';
-}
+    this.baseUrl = this.config.environment === 'production'
+      ? 'https://api.safaricom.co.ke'
+      : 'https://sandbox.safaricom.co.ke';
+  }
 
-  /**
-   * Get OAuth access token from Daraja API
-   */
+  // ✅ Shared sanitizer — strips characters that break Safaricom's XML transformer
+  private sanitize(str: string, maxLength = 100): string {
+    return str
+      .replace(/&/g, 'and')
+      .replace(/</g, '')
+      .replace(/>/g, '')
+      .replace(/"/g, '')
+      .replace(/'/g, '')
+      .trim()
+      .slice(0, maxLength);
+  }
+
   private async getAccessToken(): Promise<string> {
     try {
       const auth = Buffer.from(
@@ -55,11 +63,7 @@ class MpesaService {
 
       const response = await axios.get(
         `${this.baseUrl}/oauth/v1/generate?grant_type=client_credentials`,
-        {
-          headers: {
-            Authorization: `Basic ${auth}`,
-          },
-        }
+        { headers: { Authorization: `Basic ${auth}` } }
       );
 
       return response.data.access_token;
@@ -69,9 +73,6 @@ class MpesaService {
     }
   }
 
-  /**
-   * Generate password for STK Push
-   */
   private generatePassword(): { password: string; timestamp: string } {
     const timestamp = new Date()
       .toISOString()
@@ -85,24 +86,17 @@ class MpesaService {
     return { password, timestamp };
   }
 
-  /**
-   * Format phone number to M-Pesa format (254XXXXXXXXX)
-   */
   private formatPhoneNumber(phone: string): string {
-    // Remove spaces, dashes, and plus sign
     let formatted = phone.replace(/[\s\-\+]/g, '');
 
-    // If starts with 0, replace with 254
     if (formatted.startsWith('0')) {
       formatted = '254' + formatted.slice(1);
     }
 
-    // If starts with 7 or 1, add 254
     if (formatted.startsWith('7') || formatted.startsWith('1')) {
       formatted = '254' + formatted;
     }
 
-    // Ensure it's 12 digits starting with 254
     if (!formatted.startsWith('254') || formatted.length !== 12) {
       throw new Error('Invalid phone number format. Use 254XXXXXXXXX or 07XXXXXXXX');
     }
@@ -110,62 +104,46 @@ class MpesaService {
     return formatted;
   }
 
-  /**
-   * Initiate STK Push (Lipa Na M-Pesa Online)
-   */
-async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
-  try {
-    const accessToken = await this.getAccessToken();
-    const { password, timestamp } = this.generatePassword();
-    const phoneNumber = this.formatPhoneNumber(request.phoneNumber);
+  async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
+    try {
+      const accessToken = await this.getAccessToken();
+      const { password, timestamp } = this.generatePassword();
+      const phoneNumber = this.formatPhoneNumber(request.phoneNumber);
 
-    // ✅ Strip characters that break Safaricom's XML transformer
-    const sanitize = (str: string) =>
-      str
-        .replace(/&/g, 'and')   // & breaks XML parsing
-        .replace(/</g, '')       // < breaks XML
-        .replace(/>/g, '')       // > breaks XML
-        .replace(/"/g, '')       // quotes can break attributes
-        .replace(/'/g, '')       // single quotes too
-        .slice(0, 100);          // Safaricom has a max length
+      const payload = {
+        BusinessShortCode: this.config.shortcode,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: 'CustomerPayBillOnline',
+        Amount: Math.round(request.amount),
+        PartyA: phoneNumber,
+        PartyB: this.config.shortcode,
+        PhoneNumber: phoneNumber,
+        CallBackURL: request.callbackUrl,
+        AccountReference: this.sanitize(request.accountReference, 12),
+        TransactionDesc: this.sanitize(request.transactionDesc, 13),
+      };
 
-    const payload = {
-      BusinessShortCode: this.config.shortcode,
-      Password: password,
-      Timestamp: timestamp,
-      TransactionType: 'CustomerPayBillOnline',
-      Amount: Math.round(request.amount),
-      PartyA: phoneNumber,
-      PartyB: this.config.shortcode,
-      PhoneNumber: phoneNumber,
-      CallBackURL: request.callbackUrl,
-      AccountReference: sanitize(request.accountReference).slice(0, 12), // max 12 chars
-      TransactionDesc: sanitize(request.transactionDesc).slice(0, 13),    // max 13 chars
-    };
+      console.log('STK Push payload:', JSON.stringify(payload, null, 2));
 
-    console.log('STK Push payload:', JSON.stringify(payload, null, 2));
+      const response = await axios.post(
+        `${this.baseUrl}/mpesa/stkpush/v1/processrequest`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
 
-    const response = await axios.post(
-      `${this.baseUrl}/mpesa/stkpush/v1/processrequest`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    return response.data;
-  } catch (error: any) {
-    console.error('STK Push Error full:', JSON.stringify(error.response?.data, null, 2));
-    throw new Error(error.response?.data?.errorMessage || 'Failed to initiate M-Pesa payment');
+      return response.data;
+    } catch (error: any) {
+      console.error('STK Push Error:', JSON.stringify(error.response?.data, null, 2));
+      throw new Error(error.response?.data?.errorMessage || 'Failed to initiate M-Pesa payment');
+    }
   }
-}
 
-  /**
-   * Query STK Push transaction status
-   */
   async queryStkPushStatus(checkoutRequestID: string): Promise<any> {
     try {
       const accessToken = await this.getAccessToken();
@@ -196,35 +174,29 @@ async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
     }
   }
 
-  /**
-   * Verify callback signature (for security)
-   */
   verifyCallback(payload: any, signature: string): boolean {
-    // Implement signature verification if Safaricom provides one
-    // For now, we'll verify the payload structure
     return payload && payload.Body && payload.Body.stkCallback;
   }
 
-  /**
-   * B2C Payment (Pay designer from business account)
-   */
   async b2cPayment(phoneNumber: string, amount: number, remarks: string): Promise<any> {
     try {
-      const accessToken = await this.getAccessToken();
+      const accessToken    = await this.getAccessToken();
       const formattedPhone = this.formatPhoneNumber(phoneNumber);
 
       const payload = {
-        InitiatorName: process.env.MPESA_INITIATOR_NAME,
-        SecurityCredential: process.env.MPESA_SECURITY_CREDENTIAL,
-        CommandID: 'BusinessPayment',
-        Amount: Math.round(amount),
-        PartyA: this.config.shortcode,
-        PartyB: formattedPhone,
-        Remarks: remarks,
-        QueueTimeOutURL: `${process.env.BASE_URL}/api/payments/mpesa/timeout`,
-        ResultURL: `${process.env.BASE_URL}/api/payments/mpesa/b2c-result`,
-        Occasion: 'Designer Payment',
+        InitiatorName:       process.env.MPESA_INITIATOR_NAME,
+        SecurityCredential:  process.env.MPESA_SECURITY_CREDENTIAL,
+        CommandID:           'BusinessPayment',
+        Amount:              Math.round(amount),
+        PartyA:              this.config.shortcode,
+        PartyB:              formattedPhone,
+        Remarks:             this.sanitize(remarks, 100), // ✅ sanitized
+        QueueTimeOutURL:     `${process.env.BASE_URL}/api/payments/mpesa/timeout`,
+        ResultURL:           `${process.env.BASE_URL}/api/payments/mpesa/b2c-result`,
+        Occasion:            'Designer Payment',
       };
+
+      console.log('B2C Payment payload:', JSON.stringify(payload, null, 2));
 
       const response = await axios.post(
         `${this.baseUrl}/mpesa/b2c/v1/paymentrequest`,
@@ -239,7 +211,7 @@ async stkPush(request: STKPushRequest): Promise<STKPushResponse> {
 
       return response.data;
     } catch (error: any) {
-      console.error('B2C Payment Error:', error.response?.data || error.message);
+      console.error('B2C Payment Error:', JSON.stringify(error.response?.data, null, 2));
       throw new Error('Failed to send payment to designer');
     }
   }

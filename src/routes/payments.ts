@@ -11,15 +11,13 @@ const router = express.Router();
 
 const PLATFORM_FEE_PERCENT = 0.10;
 
-// ─── Background poller — queries Safaricom directly every 5s ─────────────────
-// Runs in parallel with the callback. Whichever confirms first wins.
-// Solves sandbox callback unreliability without needing production credentials.
+// ─── Background poller ────────────────────────────────────────────────────────
 async function pollUntilConfirmed(
   paymentId: string,
   checkoutRequestID: string,
   projectId: string
 ): Promise<void> {
-  const maxAttempts = 20;  // 20 × 5s = 100 seconds total
+  const maxAttempts = 20;
   const intervalMs  = 5000;
   let attempts      = 0;
 
@@ -31,9 +29,7 @@ async function pollUntilConfirmed(
 
       const resultCode = queryResult.ResultCode ?? queryResult.errorCode;
 
-      // ✅ Payment confirmed
       if (resultCode === '0' || resultCode === 0) {
-        // Check payment hasn't already been updated by callback
         const existing = await Payment.findById(paymentId);
         if (existing?.status === 'held') {
           console.log(`[Poll] Payment ${paymentId} already held by callback — skipping.`);
@@ -46,19 +42,15 @@ async function pollUntilConfirmed(
           mpesaReceiptNumber: queryResult.MpesaReceiptNumber || 'CONFIRMED-BY-POLL',
         });
 
-        await Project.findByIdAndUpdate(projectId, {
-          status: 'in_progress',
-        });
-
+        await Project.findByIdAndUpdate(projectId, { status: 'in_progress' });
         console.log(`✅ [Poll] Payment ${paymentId} confirmed. Project ${projectId} → in_progress.`);
         return;
       }
 
-      // ❌ Payment definitively failed — stop polling
       if (
-        resultCode === '1032' || resultCode === 1032 || // user cancelled
-        resultCode === '1037' || resultCode === 1037 || // timeout
-        resultCode === '2001' || resultCode === 2001    // wrong PIN
+        resultCode === '1032' || resultCode === 1032 ||
+        resultCode === '1037' || resultCode === 1037 ||
+        resultCode === '2001' || resultCode === 2001
       ) {
         const existing = await Payment.findById(paymentId);
         if (existing?.status === 'pending') {
@@ -68,7 +60,6 @@ async function pollUntilConfirmed(
         return;
       }
 
-      // Still pending — keep polling
       if (attempts < maxAttempts) {
         console.log(`[Poll] Payment ${paymentId} still pending. Retrying in ${intervalMs / 1000}s...`);
         setTimeout(poll, intervalMs);
@@ -77,19 +68,15 @@ async function pollUntilConfirmed(
       }
     } catch (error: any) {
       console.error(`[Poll] Error on attempt ${attempts}:`, error.message);
-      // Don't stop on error — keep retrying
-      if (attempts < maxAttempts) {
-        setTimeout(poll, intervalMs);
-      }
+      if (attempts < maxAttempts) setTimeout(poll, intervalMs);
     }
   };
 
-  // Wait 10s before first poll — give user time to enter PIN
   console.log(`[Poll] Starting background poll for ${checkoutRequestID} in 10s...`);
   setTimeout(poll, 10000);
 }
 
-// ─── Initiate Payment (Client) ───────────────────────────────────────────────
+// ─── Initiate Payment ─────────────────────────────────────────────────────────
 router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -105,9 +92,7 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
     }
 
     const project = await Project.findById(projectId);
-    if (!project) {
-      return res.status(404).json({ success: false, error: 'Project not found' });
-    }
+    if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
 
     if (project.client.clerkId !== user.clerkId) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
@@ -129,7 +114,6 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
-    // Block duplicate payments
     const existingPayment = await Payment.findOne({
       project: projectId,
       status: { $in: ['pending', 'held'] },
@@ -175,8 +159,6 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
         payment.mpesaCheckoutRequestID = stkResponse.CheckoutRequestID;
         await payment.save();
 
-        // ✅ Start background poller immediately after STK push
-        // Runs alongside the callback — whichever confirms first wins
         pollUntilConfirmed(
           payment._id.toString(),
           stkResponse.CheckoutRequestID,
@@ -200,7 +182,6 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
       } catch (mpesaError: any) {
         payment.status = 'failed';
         await payment.save();
-
         return res.status(400).json({
           success: false,
           error: mpesaError.message || 'M-Pesa payment failed',
@@ -216,8 +197,6 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
 });
 
 // ─── M-Pesa Callback ──────────────────────────────────────────────────────────
-// Still handles callbacks when they do arrive — acts as instant confirmation
-// if Safaricom sends it before the poller picks it up
 router.post('/mpesa/callback', async (req, res) => {
   try {
     console.log('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
@@ -227,36 +206,34 @@ router.post('/mpesa/callback', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid callback' });
     }
 
-    const { stkCallback } = Body;
+    const { stkCallback }   = Body;
     const checkoutRequestID = stkCallback.CheckoutRequestID;
     const resultCode        = stkCallback.ResultCode;
 
     const payment = await Payment.findOne({ mpesaCheckoutRequestID: checkoutRequestID });
     if (!payment) {
       console.error('Callback: Payment not found for CheckoutRequestID:', checkoutRequestID);
-      return res.status(200).json({ success: true }); // always 200 to Safaricom
+      return res.status(200).json({ success: true });
     }
 
-    // Skip if already processed by poller
     if (payment.status === 'held' || payment.status === 'released') {
       console.log(`Callback: Payment ${payment._id} already processed — skipping.`);
       return res.json({ success: true });
     }
 
     if (resultCode === 0) {
-      const callbackMetadata  = stkCallback.CallbackMetadata?.Item || [];
-      const receiptNumber     = callbackMetadata.find(
+      const callbackMetadata = stkCallback.CallbackMetadata?.Item || [];
+      const receiptNumber    = callbackMetadata.find(
         (item: any) => item.Name === 'MpesaReceiptNumber'
       )?.Value;
 
-      payment.status            = 'held';
-      payment.heldAt            = new Date();
+      payment.status             = 'held';
+      payment.heldAt             = new Date();
       payment.mpesaReceiptNumber = receiptNumber;
-      payment.metadata          = stkCallback;
+      payment.metadata           = stkCallback;
       await payment.save();
 
       await Project.findByIdAndUpdate(payment.project, { status: 'in_progress' });
-
       console.log(`✅ Callback: Payment ${payment._id} held. Project ${payment.project} → in_progress.`);
     } else {
       if (payment.status === 'pending') {
@@ -270,7 +247,7 @@ router.post('/mpesa/callback', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('M-Pesa callback error:', error);
-    res.status(200).json({ success: true }); // always 200
+    res.status(200).json({ success: true });
   }
 });
 
@@ -288,9 +265,7 @@ router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res)
       .populate('designer', 'name avatar')
       .sort({ createdAt: -1 });
 
-    if (!payment) {
-      return res.json({ success: true, payment: null });
-    }
+    if (!payment) return res.json({ success: true, payment: null });
 
     const isClient   = payment.client.toString() === user._id.toString();
     const isDesigner = payment.designer._id
@@ -318,9 +293,7 @@ router.get('/status/:paymentId', requireAuth, async (req: RequestWithUser, res) 
       .populate('project', 'title')
       .populate('designer', 'name');
 
-    if (!payment) {
-      return res.status(404).json({ success: false, error: 'Payment not found' });
-    }
+    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
 
     const isClient   = payment.client.toString() === user._id.toString();
     const isDesigner = payment.designer.toString() === user._id.toString();
@@ -343,9 +316,7 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
 
   try {
     const payment = await Payment.findById(req.params.paymentId).populate('project');
-    if (!payment) {
-      return res.status(404).json({ success: false, error: 'Payment not found' });
-    }
+    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
 
     const isClient = payment.client.toString() === user._id.toString();
     if (!isClient && !user.isAdmin) {
@@ -371,7 +342,7 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
       const b2cResponse = await mpesaService.b2cPayment(
         designer.phone,
         payment.designerAmount,
-        `Payment for project: ${(payment.project as any).title}`
+        'Designer Payment'  // ✅ safe static string — no special chars, no dynamic content
       );
 
       payment.status     = 'released';
@@ -401,15 +372,11 @@ router.post('/refund/:paymentId', requireAuth, async (req: RequestWithUser, res)
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
-  if (!user.isAdmin) {
-    return res.status(403).json({ success: false, error: 'Admin only' });
-  }
+  if (!user.isAdmin) return res.status(403).json({ success: false, error: 'Admin only' });
 
   try {
     const payment = await Payment.findById(req.params.paymentId);
-    if (!payment) {
-      return res.status(404).json({ success: false, error: 'Payment not found' });
-    }
+    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
 
     if (payment.status !== 'held') {
       return res.status(400).json({
@@ -420,17 +387,14 @@ router.post('/refund/:paymentId', requireAuth, async (req: RequestWithUser, res)
 
     const client = await User.findById(payment.client);
     if (!client || !client.phone) {
-      return res.status(400).json({
-        success: false,
-        error: 'Client phone number not found',
-      });
+      return res.status(400).json({ success: false, error: 'Client phone number not found' });
     }
 
     try {
       const refundResponse = await mpesaService.b2cPayment(
         client.phone,
         payment.amount,
-        `Refund for project payment`
+        'Project Refund'  // ✅ safe static string
       );
 
       payment.status     = 'refunded';
@@ -465,10 +429,7 @@ router.post('/retry-callback/:checkoutRequestId', requireAuth, async (req: Reque
       mpesaCheckoutRequestID: req.params.checkoutRequestId,
     });
 
-    if (!payment) {
-      return res.status(404).json({ error: 'Payment not found' });
-    }
-
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
     if (payment.status === 'held') {
       return res.json({ success: true, message: 'Payment already held — no fix needed' });
     }
@@ -485,17 +446,14 @@ router.post('/retry-callback/:checkoutRequestId', requireAuth, async (req: Reque
 
       await Project.findByIdAndUpdate(payment.project, { status: 'in_progress' });
 
-      return res.json({
-        success: true,
-        message: 'Payment confirmed and project unlocked',
-      });
-    } else {
-      return res.json({
-        success: false,
-        message: `Safaricom says payment not confirmed. ResultCode: ${queryResult.ResultCode}`,
-        queryResult,
-      });
+      return res.json({ success: true, message: 'Payment confirmed and project unlocked' });
     }
+
+    return res.json({
+      success: false,
+      message: `Safaricom says payment not confirmed. ResultCode: ${queryResult.ResultCode}`,
+      queryResult,
+    });
   } catch (error: any) {
     console.error('Retry callback error:', error);
     res.status(500).json({ error: error.message });
