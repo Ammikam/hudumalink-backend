@@ -338,11 +338,37 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
       });
     }
 
+    const isSandbox = process.env.MPESA_ENVIRONMENT === 'sandbox';
+
+    if (isSandbox) {
+      // ✅ Sandbox: simulate B2C — record as released without calling API
+      // B2C sandbox requires certificate encryption which is complex to set up
+      // In production this calls the real B2C API
+      payment.status     = 'released';
+      payment.releasedAt = new Date();
+      payment.metadata   = {
+        ...payment.metadata,
+        b2cResponse: {
+          simulated: true,
+          note: 'Sandbox simulation — real B2C would send to ' + designer.phone,
+          amount: payment.designerAmount,
+        },
+      };
+      await payment.save();
+
+      return res.json({
+        success: true,
+        message: `KSh ${payment.designerAmount.toLocaleString()} released to designer (sandbox simulation)`,
+        payment,
+      });
+    }
+
+    // Production: call real B2C API
     try {
       const b2cResponse = await mpesaService.b2cPayment(
         designer.phone,
         payment.designerAmount,
-        'Designer Payment'  // ✅ safe static string — no special chars, no dynamic content
+        'Designer Payment'
       );
 
       payment.status     = 'released';
@@ -364,58 +390,6 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
   } catch (error: any) {
     console.error('Release payment error:', error);
     res.status(500).json({ success: false, error: 'Failed to release payment' });
-  }
-});
-
-// ─── Refund Payment (Admin/Dispute) ───────────────────────────────────────────
-router.post('/refund/:paymentId', requireAuth, async (req: RequestWithUser, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
-
-  if (!user.isAdmin) return res.status(403).json({ success: false, error: 'Admin only' });
-
-  try {
-    const payment = await Payment.findById(req.params.paymentId);
-    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
-
-    if (payment.status !== 'held') {
-      return res.status(400).json({
-        success: false,
-        error: `Cannot refund payment with status: ${payment.status}`,
-      });
-    }
-
-    const client = await User.findById(payment.client);
-    if (!client || !client.phone) {
-      return res.status(400).json({ success: false, error: 'Client phone number not found' });
-    }
-
-    try {
-      const refundResponse = await mpesaService.b2cPayment(
-        client.phone,
-        payment.amount,
-        'Project Refund'  // ✅ safe static string
-      );
-
-      payment.status     = 'refunded';
-      payment.refundedAt = new Date();
-      payment.metadata   = { ...payment.metadata, refundResponse };
-      await payment.save();
-
-      res.json({
-        success: true,
-        message: `KSh ${payment.amount.toLocaleString()} refunded to client`,
-        payment,
-      });
-    } catch (refundError: any) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to refund payment: ' + refundError.message,
-      });
-    }
-  } catch (error) {
-    console.error('Refund payment error:', error);
-    res.status(500).json({ success: false, error: 'Failed to refund payment' });
   }
 });
 
@@ -466,9 +440,19 @@ router.get('/my-payments', requireAuth, async (req: RequestWithUser, res) => {
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
-    const payments = await Payment.find({
-      $or: [{ client: user._id }, { designer: user._id }],
-    })
+    const { role } = req.query;
+
+    let query: any;
+
+    if (role === 'designer') {
+      query = { designer: user._id };
+    } else if (role === 'client') {
+      query = { client: user._id };
+    } else {
+      query = { $or: [{ client: user._id }, { designer: user._id }] };
+    }
+
+    const payments = await Payment.find(query)
       .populate('project', 'title')
       .populate('client', 'name')
       .populate('designer', 'name')
