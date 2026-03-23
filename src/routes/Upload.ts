@@ -44,7 +44,6 @@ const uploadToCloudinary = (buffer: Buffer, folder: string): Promise<string> => 
 };
 
 // POST /api/upload/project-images
-// Upload multiple images for client projects
 router.post('/project-images', upload.array('images', 10), async (req, res) => {
   console.log('Upload route hit!');
   console.log('req.files:', req.files);
@@ -58,7 +57,6 @@ router.post('/project-images', upload.array('images', 10), async (req, res) => {
 
     console.log(`Uploading ${req.files.length} project images...`);
 
-    // Upload all images to Cloudinary
     const uploadPromises = req.files.map((file) =>
       uploadToCloudinary(file.buffer, 'projects')
     );
@@ -67,11 +65,7 @@ router.post('/project-images', upload.array('images', 10), async (req, res) => {
 
     console.log(`Successfully uploaded ${urls.length} images`);
 
-    res.json({
-      success: true,
-      urls,
-      count: urls.length,
-    });
+    res.json({ success: true, urls, count: urls.length });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Failed to upload images' });
@@ -79,7 +73,6 @@ router.post('/project-images', upload.array('images', 10), async (req, res) => {
 });
 
 // POST /api/upload/portfolio-images
-// Upload before/after images for designer portfolios
 router.post('/portfolio-images', upload.array('images', 10), async (req, res) => {
   try {
     if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
@@ -88,20 +81,13 @@ router.post('/portfolio-images', upload.array('images', 10), async (req, res) =>
 
     console.log(`Uploading ${req.files.length} portfolio images...`);
 
-    // Upload all images to Cloudinary
     const uploadPromises = req.files.map((file) =>
       uploadToCloudinary(file.buffer, 'portfolios')
     );
 
     const urls = await Promise.all(uploadPromises);
 
-    console.log(`Successfully uploaded ${urls.length} images`);
-
-    res.json({
-      success: true,
-      urls,
-      count: urls.length,
-    });
+    res.json({ success: true, urls, count: urls.length });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Failed to upload images' });
@@ -109,31 +95,51 @@ router.post('/portfolio-images', upload.array('images', 10), async (req, res) =>
 });
 
 // POST /api/upload/profile-images
-// Upload single profile/avatar/cover images
 router.post('/profile-images', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image provided' });
     }
 
-    console.log('Uploading profile image...');
-
     const url = await uploadToCloudinary(req.file.buffer, 'profiles');
 
-    console.log('Successfully uploaded profile image');
-
-    res.json({
-      success: true,
-      url,
-    });
+    res.json({ success: true, url });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Failed to upload image' });
   }
 });
 
+// ─── POST /api/upload/inspiration-image ──────────────────────────────────────
+// Upload a single before OR after image for inspirations
+// Uses its own dedicated folder so images are never mixed with covers/profiles
+router.post(
+  '/inspiration-image',
+  requireAuth,
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No image provided' });
+      }
+
+      // type must be 'before' or 'after' — used for logging/debugging only
+      const type = req.body.type === 'after' ? 'after' : 'before';
+      console.log(`Uploading inspiration ${type} image...`);
+
+      const url = await uploadToCloudinary(req.file.buffer, 'inspiration-images');
+
+      console.log(`Successfully uploaded inspiration ${type} image:`, url);
+
+      res.json({ success: true, url });
+    } catch (error) {
+      console.error('Inspiration image upload error:', error);
+      res.status(500).json({ success: false, error: 'Failed to upload image' });
+    }
+  }
+);
+
 // DELETE /api/upload/delete
-// Delete image from Cloudinary (optional - for cleanup)
 router.delete('/delete', async (req, res) => {
   try {
     const { publicId } = req.body;
@@ -144,10 +150,7 @@ router.delete('/delete', async (req, res) => {
 
     await cloudinary.uploader.destroy(publicId);
 
-    res.json({
-      success: true,
-      message: 'Image deleted successfully',
-    });
+    res.json({ success: true, message: 'Image deleted successfully' });
   } catch (error) {
     console.error('Delete error:', error);
     res.status(500).json({ error: 'Failed to delete image' });
@@ -165,7 +168,6 @@ router.post(
     try {
       const user = req.user;
 
-      // Prevent re-application
       if (user.designerProfile?.status && user.designerProfile.status !== 'rejected') {
         return res.status(400).json({
           success: false,
@@ -173,7 +175,6 @@ router.post(
         });
       }
 
-      // Upload portfolio images
       const portfolioUrls: string[] = [];
       if (req.files?.portfolioImages) {
         const files = Array.isArray(req.files.portfolioImages)
@@ -185,7 +186,6 @@ router.post(
         }
       }
 
-      // Upload credentials
       const credentialUrls: string[] = [];
       if (req.files?.credentials) {
         const files = Array.isArray(req.files.credentials)
@@ -197,29 +197,16 @@ router.post(
         }
       }
 
-      // Parse form data
       const {
-        fullName,
-        phone,
-        idNumber,
-        experience,
-        education,
-        location,
-        about,
-        startingPrice,
-        responseTime,
-        calendlyLink,
-        videoUrl,
-        styles,
-        references,
-        socialLinks,
+        fullName, phone, idNumber, experience, education,
+        location, about, startingPrice, responseTime,
+        calendlyLink, videoUrl, styles, references, socialLinks,
       } = req.body;
 
-      const parsedStyles = styles ? JSON.parse(styles) : [];
-      const parsedReferences = references ? JSON.parse(references) : [];
-      const parsedSocialLinks = socialLinks ? JSON.parse(socialLinks) : {};
+      const parsedStyles      = styles       ? JSON.parse(styles)       : [];
+      const parsedReferences  = references   ? JSON.parse(references)   : [];
+      const parsedSocialLinks = socialLinks  ? JSON.parse(socialLinks)  : {};
 
-      // Create or update designerProfile
       user.designerProfile = {
         status: 'pending',
         idNumber: idNumber || '',
@@ -241,14 +228,9 @@ router.post(
         projectsCompleted: 0,
       };
 
-      // Add designer role
-      if (!user.roles.includes('designer')) {
-        user.roles.push('designer');
-      }
-
-      // Update name/phone if provided
+      if (!user.roles.includes('designer')) user.roles.push('designer');
       if (fullName) user.name = fullName;
-      if (phone) user.phone = phone;
+      if (phone)    user.phone = phone;
 
       await user.save();
 

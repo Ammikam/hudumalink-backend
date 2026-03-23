@@ -96,6 +96,8 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
       .populate('project', 'title description budget timeline status')
       .sort({ createdAt: -1 });
 
+      
+
     res.json({ success: true, proposals });
   } catch (error: any) {
     res.status(500).json({ success: false, error: 'Failed to fetch proposals' });
