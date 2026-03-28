@@ -1,4 +1,4 @@
-// backend/src/routes/users.ts - COMPLETE WITH PROFILE UPDATE
+// backend/src/routes/users.ts 
 import express from 'express';
 import User from '../models/User';
 import { requireAuth } from '../middlewares/auth';
@@ -32,17 +32,29 @@ function uploadToCloudinary(buffer: Buffer, folder: string, publicId: string): P
 
 const router = express.Router();
 
-// ✅ NEW: Update client profile
+// ─── GET /api/users/me ────────────────────────────────────────────────────────
+// Used by the admin panel's ProtectedAdminRoute to verify admin role
+router.get('/me', requireAuth, async (req: RequestWithUser, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
+
+  res.json({
+    success: true,
+    user: {
+      id: user._id,
+      roles: user.roles || ['client'],
+    },
+  });
+});
+
+// ─── PATCH /api/users/update-profile ─────────────────────────────────────────
 router.patch('/update-profile', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const { location, phone, bio } = req.body;
 
-    // Update user in MongoDB
     const updatedUser = await User.findByIdAndUpdate(
       user._id,
       {
@@ -56,10 +68,7 @@ router.patch('/update-profile', requireAuth, async (req: RequestWithUser, res) =
     );
 
     if (!updatedUser) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'User not found' 
-      });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
 
     res.json({
@@ -73,42 +82,28 @@ router.patch('/update-profile', requireAuth, async (req: RequestWithUser, res) =
     });
   } catch (error) {
     console.error('Error updating profile:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to update profile' 
-    });
+    res.status(500).json({ success: false, error: 'Failed to update profile' });
   }
 });
 
-// ✅ NEW: Get current user's profile
+// ─── GET /api/users/profile ───────────────────────────────────────────────────
 router.get('/profile', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const userProfile = await User.findById(user._id).select(
       'name email clerkId location phone bio avatar roles createdAt'
     );
 
     if (!userProfile) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'User not found' 
-      });
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    res.json({
-      success: true,
-      user: userProfile,
-    });
+    res.json({ success: true, user: userProfile });
   } catch (error) {
     console.error('Error fetching profile:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to fetch profile' 
-    });
+    res.status(500).json({ success: false, error: 'Failed to fetch profile' });
   }
 });
 
@@ -116,9 +111,7 @@ router.get('/profile', requireAuth, async (req: RequestWithUser, res) => {
 router.get('/mongo-id/:clerkId', requireAuth, async (req, res) => {
   try {
     const user = await User.findOne({ clerkId: req.params.clerkId }).select('_id');
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({ success: true, mongoId: user._id.toString() });
   } catch (err) {
     console.error('[mongo-id] Error:', err);
@@ -132,15 +125,29 @@ router.get('/designer-status', requireAuth, async (req: RequestWithUser, res) =>
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
+    // ✅ Ban check — must be first, before anything else
+    if (user.banned) {
+      return res.status(403).json({
+        success: false,
+        banned: true,
+        reason: user.banReason || 'Your account has been banned. Contact support to appeal.',
+      });
+    }
+
+    // Not a designer
     if (!user.roles.includes('designer') || !user.designerProfile) {
       return res.json({ success: true, status: 'none' });
     }
 
     const status = user.designerProfile.status || 'pending';
-    
+
     res.json({
       success: true,
       status,
+      // Return suspend reason so the frontend SuspendedPage can display it
+      reason: status === 'suspended'
+        ? (user.designerProfile.rejectionReason || null)
+        : null,
       rejectionReason: user.designerProfile.rejectionReason,
     });
   } catch (err) {
@@ -154,13 +161,21 @@ router.post('/apply-designer', requireAuth, async (req: RequestWithUser, res) =>
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
+  // Banned users cannot apply
+  if (user.banned) {
+    return res.status(403).json({
+      success: false,
+      banned: true,
+      error: 'Your account has been banned.',
+    });
+  }
+
   try {
     const {
       idNumber, location, about, styles, startingPrice,
       responseTime, portfolioImages, references, calendlyLink, socialLinks,
     } = req.body;
 
-    // Validation
     if (!idNumber?.trim()) {
       return res.status(400).json({ success: false, error: 'National ID number is required' });
     }
@@ -183,26 +198,17 @@ router.post('/apply-designer', requireAuth, async (req: RequestWithUser, res) =>
       });
     }
 
-    // Check if user already has a designer application
     if (user.roles.includes('designer') && user.designerProfile) {
       const status = user.designerProfile.status;
       if (status === 'pending') {
-        return res.status(400).json({
-          success: false,
-          error: 'You already have a pending application',
-        });
+        return res.status(400).json({ success: false, error: 'You already have a pending application' });
       }
       if (status === 'approved') {
-        return res.status(400).json({
-          success: false,
-          error: 'You are already an approved designer',
-        });
+        return res.status(400).json({ success: false, error: 'You are already an approved designer' });
       }
     }
 
-    // Build the update
     const updates: any = {};
-    
     if (!user.roles.includes('designer')) {
       updates.$addToSet = { roles: 'designer' };
     }
@@ -216,7 +222,7 @@ router.post('/apply-designer', requireAuth, async (req: RequestWithUser, res) =>
       'designerProfile.startingPrice': Number(startingPrice) || 250000,
       'designerProfile.responseTime': responseTime || 'Within 24 hours',
       'designerProfile.portfolioImages': portfolioImages.filter((url: string) => url?.trim()),
-      'designerProfile.references': references.filter((ref: any) => 
+      'designerProfile.references': references.filter((ref: any) =>
         ref.name?.trim() && ref.email?.trim() && ref.relation?.trim()
       ),
       'designerProfile.calendlyLink': calendlyLink?.trim() || '',
@@ -230,28 +236,14 @@ router.post('/apply-designer', requireAuth, async (req: RequestWithUser, res) =>
       'designerProfile.credentials': [],
     };
 
-    const updated = await User.findByIdAndUpdate(
-      user._id,
-      updates,
-      { new: true, runValidators: true }
-    );
+    const updated = await User.findByIdAndUpdate(user._id, updates, { new: true, runValidators: true });
 
-    if (!updated) {
-      return res.status(404).json({ success: false, error: 'User not found' });
-    }
+    if (!updated) return res.status(404).json({ success: false, error: 'User not found' });
 
-    res.json({
-      success: true,
-      message: 'Designer application submitted successfully',
-      user: updated,
-    });
+    res.json({ success: true, message: 'Designer application submitted successfully', user: updated });
   } catch (err: any) {
     console.error('[apply-designer]', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to submit application',
-      details: err.message,
-    });
+    res.status(500).json({ success: false, error: 'Failed to submit application', details: err.message });
   }
 });
 
@@ -273,11 +265,7 @@ router.post('/upload-avatar', requireAuth, upload.single('avatar'), async (req: 
   if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
 
   try {
-    const url = await uploadToCloudinary(
-      req.file.buffer,
-      'designer-avatars',
-      `avatar_${user.clerkId}`
-    );
+    const url = await uploadToCloudinary(req.file.buffer, 'designer-avatars', `avatar_${user.clerkId}`);
     await User.findByIdAndUpdate(user._id, { $set: { avatar: url } });
     res.json({ success: true, url });
   } catch (err) {
@@ -293,11 +281,7 @@ router.post('/upload-cover', requireAuth, upload.single('cover'), async (req: Re
   if (!req.file) return res.status(400).json({ success: false, error: 'No file provided' });
 
   try {
-    const url = await uploadToCloudinary(
-      req.file.buffer,
-      'designer-covers',
-      `cover_${user.clerkId}`
-    );
+    const url = await uploadToCloudinary(req.file.buffer, 'designer-covers', `cover_${user.clerkId}`);
     await User.findByIdAndUpdate(user._id, { $set: { 'designerProfile.coverImage': url } });
     res.json({ success: true, url });
   } catch (err) {
