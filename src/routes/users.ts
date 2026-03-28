@@ -124,8 +124,9 @@ router.get('/designer-status', requireAuth, async (req: RequestWithUser, res) =>
   const user = req.user;
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
+
   try {
-    // ✅ Ban check — must be first, before anything else
+    //  Ban check — must be first, before anything else
     if (user.banned) {
       return res.status(403).json({
         success: false,
