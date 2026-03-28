@@ -341,7 +341,7 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
     const isSandbox = process.env.MPESA_ENVIRONMENT === 'sandbox';
 
     if (isSandbox) {
-      // ✅ Sandbox: simulate B2C — record as released without calling API
+      // Sandbox: simulate B2C — record as released without calling API
       // B2C sandbox requires certificate encryption which is complex to set up
       // In production this calls the real B2C API
       payment.status     = 'released';

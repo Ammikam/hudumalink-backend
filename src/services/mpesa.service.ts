@@ -43,7 +43,7 @@ class MpesaService {
       : 'https://sandbox.safaricom.co.ke';
   }
 
-  // ✅ Shared sanitizer — strips characters that break Safaricom's XML transformer
+  // Shared sanitizer — strips characters that break Safaricom's XML transformer
   private sanitize(str: string, maxLength = 100): string {
     return str
       .replace(/&/g, 'and')
