@@ -3,6 +3,8 @@ import User from '../models/User';
 import Project from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
 import { requireAdmin } from '../middlewares/roles';
+import Payment from '../models/Payment';
+
 
 const router = express.Router();
 
@@ -454,6 +456,285 @@ router.delete('/projects/:id', async (req, res) => {
       success: false,
       error: 'Failed to delete project',
     });
+  }
+});
+
+
+// ─── GET /api/admin/payments ──────────────────────────────────────────────────
+// List all transactions with filters: status, dateFrom, dateTo, search
+router.get('/payments', async (req, res) => {
+  try {
+    const { status, dateFrom, dateTo, search, page: pageStr, limit: limitStr } = req.query;
+    const page  = parseInt(pageStr as string)  || 1;
+    const limit = parseInt(limitStr as string) || 20;
+    const skip  = (page - 1) * limit;
+
+    const query: any = {};
+
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(dateFrom as string);
+      if (dateTo)   query.createdAt.$lte = new Date(new Date(dateTo as string).setHours(23, 59, 59));
+    }
+
+    // Search by M-Pesa receipt number
+    if (search) {
+      query.mpesaReceiptNumber = { $regex: search as string, $options: 'i' };
+    }
+
+    const [payments, total, stats] = await Promise.all([
+      Payment.find(query)
+        .populate('project', 'title')
+        .populate('client', 'name email')
+        .populate('designer', 'name email')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+
+      Payment.countDocuments(query),
+
+      // Aggregate stats for the summary cards (unaffected by pagination)
+      Payment.aggregate([
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            totalAmount:    { $sum: '$amount' },
+            totalPlatformFee: { $sum: '$platformFee' },
+            totalDesignerAmount: { $sum: '$designerAmount' },
+          },
+        },
+      ]),
+    ]);
+
+    // Shape stats into a flat object
+    const summary = {
+      totalRevenue: 0,
+      totalHeld: 0,
+      totalReleased: 0,
+      totalFailed: 0,
+      countHeld: 0,
+      countReleased: 0,
+      countPending: 0,
+      countFailed: 0,
+    };
+
+    stats.forEach((s: any) => {
+      if (s._id === 'held') {
+        summary.totalHeld   = s.totalAmount;
+        summary.countHeld   = s.count;
+        summary.totalRevenue += s.totalPlatformFee;
+      }
+      if (s._id === 'released') {
+        summary.totalReleased   = s.totalAmount;
+        summary.countReleased   = s.count;
+        summary.totalRevenue   += s.totalPlatformFee;
+      }
+      if (s._id === 'pending') {
+        summary.countPending = s.count;
+      }
+      if (s._id === 'failed') {
+        summary.totalFailed  = s.totalAmount;
+        summary.countFailed  = s.count;
+      }
+    });
+
+    res.json({
+      success: true,
+      payments,
+      summary,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Admin payments error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch payments' });
+  }
+});
+
+// ─── PATCH /api/admin/payments/:id/status ────────────────────────────────────
+// Admin override — manually set a payment status (e.g. stuck pending → held)
+router.patch('/payments/:id/status', async (req, res) => {
+  try {
+    const { status, note } = req.body;
+
+    const validStatuses = ['pending', 'held', 'released', 'refunded', 'failed'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid status' });
+    }
+
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Payment not found' });
+    }
+
+    const previousStatus = payment.status;
+    payment.status = status;
+
+    // Set relevant timestamps
+    if (status === 'held'     && !payment.heldAt)     payment.heldAt     = new Date();
+    if (status === 'released' && !payment.releasedAt) payment.releasedAt = new Date();
+    if (status === 'refunded' && !payment.refundedAt) payment.refundedAt = new Date();
+
+    // Record the admin override in metadata
+    payment.metadata = {
+      ...payment.metadata,
+      adminOverride: {
+        previousStatus,
+        newStatus: status,
+        note: note || 'Manual override by admin',
+        overriddenAt: new Date(),
+      },
+    };
+
+    await payment.save();
+
+    // If releasing, also mark project as completed
+    if (status === 'released') {
+      await Project.findByIdAndUpdate(payment.project, { status: 'completed' });
+    }
+
+    // If overriding to held, make sure project is in_progress
+    if (status === 'held') {
+      await Project.findByIdAndUpdate(payment.project, { status: 'in_progress' });
+    }
+
+    res.json({
+      success: true,
+      message: `Payment status updated from ${previousStatus} to ${status}`,
+      payment,
+    });
+  } catch (error) {
+    console.error('Admin override payment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to update payment status' });
+  }
+});
+
+// ─── POST /api/admin/payments/:id/release ────────────────────────────────────
+// Admin manually releases held payment to designer (bypasses client approval)
+router.post('/payments/:id/release', async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.id).populate('designer');
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Payment not found' });
+    }
+
+    if (payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        error: `Payment must be in 'held' status to release. Current: ${payment.status}`,
+      });
+    }
+
+    payment.status     = 'released';
+    payment.releasedAt = new Date();
+    payment.metadata   = {
+      ...payment.metadata,
+      adminRelease: {
+        releasedAt: new Date(),
+        note: req.body.note || 'Released by admin',
+      },
+    };
+
+    await payment.save();
+    await Project.findByIdAndUpdate(payment.project, { status: 'completed' });
+
+    res.json({
+      success: true,
+      message: `KSh ${payment.designerAmount.toLocaleString()} released to designer`,
+      payment,
+    });
+  } catch (error) {
+    console.error('Admin release payment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to release payment' });
+  }
+});
+
+// ─── POST /api/admin/payments/:id/refund ─────────────────────────────────────
+// Admin flags a payment as refunded (actual refund via M-Pesa done manually)
+router.post('/payments/:id/refund', async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Payment not found' });
+    }
+
+    if (!['held', 'pending'].includes(payment.status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Cannot refund a payment with status: ${payment.status}`,
+      });
+    }
+
+    payment.status     = 'refunded';
+    payment.refundedAt = new Date();
+    payment.metadata   = {
+      ...payment.metadata,
+      refund: {
+        reason: reason || 'Refunded by admin',
+        refundedAt: new Date(),
+      },
+    };
+
+    await payment.save();
+
+    // Reopen the project so the client can hire a new designer
+    await Project.findByIdAndUpdate(payment.project, {
+      status: 'open',
+      designer: null,
+    });
+
+    res.json({
+      success: true,
+      message: `Payment marked as refunded. Project reopened.`,
+      payment,
+    });
+  } catch (error) {
+    console.error('Admin refund payment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to refund payment' });
+  }
+});
+
+// ─── POST /api/admin/payments/:id/flag ───────────────────────────────────────
+// Flag a payment as disputed for investigation
+router.post('/payments/:id/flag', async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    const payment = await Payment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, error: 'Payment not found' });
+    }
+
+    payment.metadata = {
+      ...payment.metadata,
+      dispute: {
+        flagged: true,
+        reason: reason || 'Flagged for investigation',
+        flaggedAt: new Date(),
+      },
+    };
+
+    await payment.save();
+
+    res.json({
+      success: true,
+      message: 'Payment flagged for investigation',
+      payment,
+    });
+  } catch (error) {
+    console.error('Admin flag payment error:', error);
+    res.status(500).json({ success: false, error: 'Failed to flag payment' });
   }
 });
 

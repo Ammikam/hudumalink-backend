@@ -36,7 +36,6 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(401).json({ success: false, error: 'Authentication required' });
     }
 
-    // Auto-accept pending invite if one exists
     const existingInvite = await Invite.findOne({
       project: projectId,
       designer: designerId,
@@ -64,8 +63,8 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
     return res.json({
       success: true,
       proposal,
-      message: existingInvite 
-        ? 'Proposal sent & invite accepted!' 
+      message: existingInvite
+        ? 'Proposal sent & invite accepted!'
         : 'Proposal sent successfully!',
     });
   } catch (error: any) {
@@ -96,8 +95,6 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
       .populate('project', 'title description budget timeline status')
       .sort({ createdAt: -1 });
 
-      
-
     res.json({ success: true, proposals });
   } catch (error: any) {
     res.status(500).json({ success: false, error: 'Failed to fetch proposals' });
@@ -118,6 +115,39 @@ router.get('/project/:projectId', requireAuth, async (req: RequestWithUser, res)
   }
 });
 
+// ─── GET /api/proposals/project/:projectId/accepted ──────────────────────────
+// Returns the single accepted proposal for a project.
+// Used by PaymentPage to get the correct designer fee to charge.
+router.get('/project/:projectId/accepted', requireAuth, async (req: RequestWithUser, res) => {
+  try {
+    const proposal = await Proposal.findOne({
+      project: req.params.projectId,
+      status: 'accepted',
+    }).populate('designer', 'name avatar');
+
+    if (!proposal) {
+      return res.status(404).json({
+        success: false,
+        error: 'No accepted proposal found for this project',
+      });
+    }
+
+    res.json({
+      success: true,
+      proposal: {
+        _id: proposal._id,
+        price: proposal.price,       // ← designer's quoted fee — this is what client pays
+        timeline: proposal.timeline,
+        message: proposal.message,
+        designer: proposal.designer,
+      },
+    });
+  } catch (error) {
+    console.error('Fetch accepted proposal error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch accepted proposal' });
+  }
+});
+
 // ─── PATCH /api/proposals/:id/accept ────────────────────────────────────────
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   try {
@@ -129,7 +159,6 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       return res.status(404).json({ success: false, error: 'Proposal not found' });
     }
 
-    // Ownership check
     const projectClientClerkId = (proposal.project as any).client?.clerkId;
     if (projectClientClerkId !== req.user?.clerkId) {
       return res.status(403).json({
@@ -138,11 +167,9 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
-    // Accept this proposal
     proposal.status = 'accepted';
     await proposal.save();
 
-    // Auto-reject all other pending proposals for this project
     await Proposal.updateMany(
       {
         project: (proposal.project as any)._id,
@@ -155,8 +182,6 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
       }
     );
 
-    // ✅ STEP 2 CHANGE: Set status to payment_pending instead of in_progress
-    // Designer is assigned but project is locked until client pays
     await Project.findByIdAndUpdate((proposal.project as any)._id, {
       status: 'payment_pending',
       designer: (proposal.designer as any)._id,
@@ -182,8 +207,7 @@ router.patch('/:id/reject', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const { reason } = req.body;
 
-    const proposal = await Proposal.findById(req.params.id)
-      .populate('project');
+    const proposal = await Proposal.findById(req.params.id).populate('project');
 
     if (!proposal) {
       return res.status(404).json({ success: false, error: 'Proposal not found' });
