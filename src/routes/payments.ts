@@ -11,6 +11,10 @@ const router = express.Router();
 
 const PLATFORM_FEE_PERCENT = 0.10;
 
+
+// M-Pesa STK push expires after 5 minutes. We wait 6 to be safe.
+const PENDING_TIMEOUT_MINUTES = 6;
+
 // ─── Background poller ────────────────────────────────────────────────────────
 async function pollUntilConfirmed(
   paymentId: string,
@@ -43,20 +47,23 @@ async function pollUntilConfirmed(
         });
 
         await Project.findByIdAndUpdate(projectId, { status: 'in_progress' });
-        console.log(`✅ [Poll] Payment ${paymentId} confirmed. Project ${projectId} → in_progress.`);
+        console.log(` [Poll] Payment ${paymentId} confirmed. Project ${projectId} → in_progress.`);
         return;
       }
 
+      //  Mark as failed immediately when M-Pesa returns a failure code
+      // This allows the client to retry without admin intervention
       if (
-        resultCode === '1032' || resultCode === 1032 ||
-        resultCode === '1037' || resultCode === 1037 ||
-        resultCode === '2001' || resultCode === 2001
+        resultCode === '1032' || resultCode === 1032 ||  // cancelled by user
+        resultCode === '1037' || resultCode === 1037 ||  // timeout
+        resultCode === '2001' || resultCode === 2001 ||  // wrong PIN
+        resultCode === '1'    || resultCode === 1         // insufficient balance
       ) {
         const existing = await Payment.findById(paymentId);
         if (existing?.status === 'pending') {
           await Payment.findByIdAndUpdate(paymentId, { status: 'failed' });
+          console.log(`❌ [Poll] Payment ${paymentId} failed (code ${resultCode}) — marked failed, client can retry.`);
         }
-        console.log(`❌ [Poll] Payment ${paymentId} failed. ResultCode: ${resultCode}`);
         return;
       }
 
@@ -64,7 +71,12 @@ async function pollUntilConfirmed(
         console.log(`[Poll] Payment ${paymentId} still pending. Retrying in ${intervalMs / 1000}s...`);
         setTimeout(poll, intervalMs);
       } else {
-        console.log(`⏰ [Poll] Payment ${paymentId} timed out after ${maxAttempts} attempts.`);
+        //  Timed out, mark as failed so client can retry
+        const existing = await Payment.findById(paymentId);
+        if (existing?.status === 'pending') {
+          await Payment.findByIdAndUpdate(paymentId, { status: 'failed' });
+          console.log(`⏰ [Poll] Payment ${paymentId} timed out — marked failed, client can retry.`);
+        }
       }
     } catch (error: any) {
       console.error(`[Poll] Error on attempt ${attempts}:`, error.message);
@@ -114,16 +126,58 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
       });
     }
 
+    
+    const staleThreshold = new Date(Date.now() - PENDING_TIMEOUT_MINUTES * 60 * 1000);
+
+    const staleCount = await Payment.countDocuments({
+      project: projectId,
+      status: 'pending',
+      createdAt: { $lt: staleThreshold },
+    });
+
+    if (staleCount > 0) {
+      await Payment.updateMany(
+        {
+          project: projectId,
+          status: 'pending',
+          createdAt: { $lt: staleThreshold },
+        },
+        { status: 'failed' }
+      );
+      console.log(`[Initiate] Cleaned up ${staleCount} stale pending payment(s) for project ${projectId}`);
+    }
+
+  
+    await Payment.updateMany(
+      {
+        project: projectId,
+        status: 'pending',
+        // Only clean up ones without a checkoutRequestID (never reached M-Pesa)
+        mpesaCheckoutRequestID: { $exists: false },
+      },
+      { status: 'failed' }
+    );
+
+    // Now check if there's a genuinely active payment (pending < 6 min, or held)
     const existingPayment = await Payment.findOne({
       project: projectId,
       status: { $in: ['pending', 'held'] },
     });
 
     if (existingPayment) {
+      if (existingPayment.status === 'held') {
+        return res.status(400).json({
+          success: false,
+          error: 'This project has already been paid for',
+        });
+      }
+
+      // Pending but recent STK may still be active on client's phone
+      const ageMinutes = (Date.now() - existingPayment.createdAt.getTime()) / 60000;
       return res.status(400).json({
         success: false,
-        error: 'A payment for this project is already in progress',
-        paymentId: existingPayment._id,
+        error: `A payment request was sent ${Math.round(ageMinutes)} minute(s) ago. Please check your phone or wait ${Math.ceil(PENDING_TIMEOUT_MINUTES - ageMinutes)} more minute(s) to retry.`,
+        retryAfterSeconds: Math.ceil((PENDING_TIMEOUT_MINUTES * 60) - (ageMinutes * 60)),
       });
     }
 
@@ -180,6 +234,7 @@ router.post('/initiate', requireAuth, async (req: RequestWithUser, res) => {
           },
         });
       } catch (mpesaError: any) {
+        //  If STK push itself fails (network, config), mark payment failed immediately
         payment.status = 'failed';
         await payment.save();
         return res.status(400).json({
@@ -234,14 +289,15 @@ router.post('/mpesa/callback', async (req, res) => {
       await payment.save();
 
       await Project.findByIdAndUpdate(payment.project, { status: 'in_progress' });
-      console.log(`✅ Callback: Payment ${payment._id} held. Project ${payment.project} → in_progress.`);
+      console.log(`Callback: Payment ${payment._id} held. Project ${payment.project} → in_progress.`);
     } else {
+      // Any non-zero result code = failed — mark immediately so client can retry
       if (payment.status === 'pending') {
         payment.status   = 'failed';
         payment.metadata = stkCallback;
         await payment.save();
+        console.log(`❌ Callback: Payment ${payment._id} failed (code ${resultCode}) — client can retry.`);
       }
-      console.log(`❌ Callback: Payment ${payment._id} failed. Code: ${resultCode}`);
     }
 
     res.json({ success: true });
@@ -341,9 +397,6 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
     const isSandbox = process.env.MPESA_ENVIRONMENT === 'sandbox';
 
     if (isSandbox) {
-      // Sandbox: simulate B2C — record as released without calling API
-      // B2C sandbox requires certificate encryption which is complex to set up
-      // In production this calls the real B2C API
       payment.status     = 'released';
       payment.releasedAt = new Date();
       payment.metadata   = {
@@ -363,7 +416,6 @@ router.post('/release/:paymentId', requireAuth, async (req: RequestWithUser, res
       });
     }
 
-    // Production: call real B2C API
     try {
       const b2cResponse = await mpesaService.b2cPayment(
         designer.phone,
@@ -443,14 +495,9 @@ router.get('/my-payments', requireAuth, async (req: RequestWithUser, res) => {
     const { role } = req.query;
 
     let query: any;
-
-    if (role === 'designer') {
-      query = { designer: user._id };
-    } else if (role === 'client') {
-      query = { client: user._id };
-    } else {
-      query = { $or: [{ client: user._id }, { designer: user._id }] };
-    }
+    if (role === 'designer')     query = { designer: user._id };
+    else if (role === 'client')  query = { client: user._id };
+    else                         query = { $or: [{ client: user._id }, { designer: user._id }] };
 
     const payments = await Payment.find(query)
       .populate('project', 'title')
