@@ -1,4 +1,4 @@
-// backend/src/routes/invites.ts - UPDATED FOR currentPhotos
+// backend/src/routes/invites.ts
 import express from 'express';
 import mongoose, { Schema, Document } from 'mongoose';
 import { requireAuth } from '../middlewares/auth';
@@ -17,13 +17,12 @@ interface IInvite extends Document {
 }
 
 const InviteSchema = new Schema<IInvite>({
-  project:  { type: Schema.Types.ObjectId, ref: 'Project',  required: true, index: true },
-  designer: { type: Schema.Types.ObjectId, ref: 'User',     required: true, index: true },
-  status:   { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
+  project:     { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  designer:    { type: Schema.Types.ObjectId, ref: 'User',    required: true, index: true },
+  status:      { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
   respondedAt: { type: Date },
 }, { timestamps: true });
 
-// Prevent duplicate invites for the same project-designer pair
 InviteSchema.index({ project: 1, designer: 1 }, { unique: true });
 
 const Invite = mongoose.models.Invite || mongoose.model<IInvite>('Invite', InviteSchema);
@@ -83,23 +82,21 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
     })
       .populate({
         path: 'project',
-        // ✅ UPDATED: Include currentPhotos in select
         select: 'title description location budget timeline styles photos currentPhotos beforePhotos inspirationPhotos inspirationNotes afterPhotos client status createdAt',
       })
       .sort({ createdAt: -1 })
       .lean();
 
-    // ✅ Transform projects to include currentPhotos fallback
     const transformedInvites = invites.map(invite => ({
       ...invite,
       project: invite.project ? {
         ...invite.project,
-        currentPhotos: (invite.project as any).currentPhotos || (invite.project as any).beforePhotos || [],
-        beforePhotos: (invite.project as any).beforePhotos || [],
+        currentPhotos:     (invite.project as any).currentPhotos     || (invite.project as any).beforePhotos || [],
+        beforePhotos:      (invite.project as any).beforePhotos      || [],
         inspirationPhotos: (invite.project as any).inspirationPhotos || [],
-        inspirationNotes: (invite.project as any).inspirationNotes || '',
-        afterPhotos: (invite.project as any).afterPhotos || [],
-        photos: (invite.project as any).photos || [],
+        inspirationNotes:  (invite.project as any).inspirationNotes  || '',
+        afterPhotos:       (invite.project as any).afterPhotos       || [],
+        photos:            (invite.project as any).photos            || [],
       } : null,
     }));
 
@@ -114,93 +111,83 @@ router.get('/my', requireAuth, async (req: RequestWithUser, res) => {
 router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const invite = await Invite.findById(req.params.id).populate('project');
-    
+
     if (!invite) {
       return res.status(404).json({ success: false, error: 'Invite not found' });
     }
-    
+
     if (invite.designer.toString() !== user._id.toString()) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'You are not authorized to accept this invite' 
-      });
+      return res.status(403).json({ success: false, error: 'You are not authorized to accept this invite' });
     }
-    
+
     if (invite.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `This invite has already been ${invite.status}` 
-      });
+      return res.status(400).json({ success: false, error: `This invite has already been ${invite.status}` });
     }
-    
+
     invite.status = 'accepted';
     invite.respondedAt = new Date();
     await invite.save();
-    
+
     const project = await Project.findById(invite.project);
     if (!project) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Project not found' 
-      });
+      return res.status(404).json({ success: false, error: 'Project not found' });
     }
 
     if (project.status !== 'open') {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'This project is no longer available' 
-      });
+      return res.status(400).json({ success: false, error: 'This project is no longer available' });
     }
-    
+
+    // Assign the designer but do NOT start work yet 
+    // set payment_pending so the client must pay escrow first,
+    // exactly the same as the proposal acceptance flow.
     project.designer = user._id;
-    project.status = 'in_progress';
+    project.status = 'payment_pending';
     await project.save();
-    
+
+    // Decline all other pending invites for this project
+    // so the client is not waiting on other designers
     await Invite.updateMany(
-      { 
+      {
         project: invite.project,
-        _id: { $ne: invite._id },
-        status: 'pending'
+        _id:     { $ne: invite._id },
+        status:  'pending',
       },
-      { 
-        status: 'declined',
+      {
+        status:      'declined',
         respondedAt: new Date(),
       }
     );
-    
+
     const updatedProject = await Project.findById(project._id)
       .populate('designer', 'name avatar')
       .lean();
-    
-    // ✅ Transform project with currentPhotos
+
     const transformedProject = updatedProject ? {
       ...updatedProject,
-      currentPhotos: updatedProject.currentPhotos || updatedProject.beforePhotos || [],
-      beforePhotos: updatedProject.beforePhotos || [],
-      inspirationPhotos: updatedProject.inspirationPhotos || [],
-      inspirationNotes: updatedProject.inspirationNotes || '',
-      afterPhotos: updatedProject.afterPhotos || [],
-      photos: updatedProject.photos || [],
+      currentPhotos:     updatedProject.currentPhotos     || (updatedProject as any).beforePhotos || [],
+      beforePhotos:      (updatedProject as any).beforePhotos      || [],
+      inspirationPhotos: (updatedProject as any).inspirationPhotos || [],
+      inspirationNotes:  (updatedProject as any).inspirationNotes  || '',
+      afterPhotos:       (updatedProject as any).afterPhotos       || [],
+      photos:            updatedProject.photos            || [],
     } : null;
-    
-    res.json({ 
-      success: true, 
-      message: 'Invite accepted! Project assigned successfully.',
+
+    res.json({
+      success: true,
+      // Tell the frontend to send the client to the payment page
+      message: 'Invite accepted! The client will be notified to complete payment before work begins.',
+      requiresPayment: true,
+      projectId: project._id,
       invite,
-      project: transformedProject
+      project: transformedProject,
     });
-    
+
   } catch (error) {
     console.error('Error accepting invite:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to accept invite. Please try again.' 
-    });
+    res.status(500).json({ success: false, error: 'Failed to accept invite. Please try again.' });
   }
 });
 
@@ -208,46 +195,42 @@ router.patch('/:id/accept', requireAuth, async (req: RequestWithUser, res) => {
 router.patch('/:id/decline', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const user = req.user;
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
+    if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
     const invite = await Invite.findById(req.params.id);
-    
+
     if (!invite) {
       return res.status(404).json({ success: false, error: 'Invite not found' });
     }
-    
+
     if (invite.designer.toString() !== user._id.toString()) {
-      return res.status(403).json({ 
-        success: false, 
-        error: 'You are not authorized to decline this invite' 
-      });
+      return res.status(403).json({ success: false, error: 'You are not authorized to decline this invite' });
     }
-    
+
     if (invite.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `This invite has already been ${invite.status}` 
-      });
+      return res.status(400).json({ success: false, error: `This invite has already been ${invite.status}` });
     }
-    
+
     invite.status = 'declined';
     invite.respondedAt = new Date();
     await invite.save();
-    
-    res.json({ 
-      success: true, 
-      message: 'Invite declined.',
-      invite
+
+    //  Put the project back to open so the client can receive
+    // proposals from other designers or invite someone else
+    await Project.findByIdAndUpdate(invite.project, {
+      status:   'open',
+      designer: null,
     });
-    
+
+    res.json({
+      success: true,
+      message: 'Invite declined. The project is back open for other designers.',
+      invite,
+    });
+
   } catch (error) {
     console.error('Error declining invite:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to decline invite. Please try again.' 
-    });
+    res.status(500).json({ success: false, error: 'Failed to decline invite. Please try again.' });
   }
 });
 

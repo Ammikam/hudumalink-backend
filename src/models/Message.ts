@@ -1,7 +1,15 @@
 // src/models/Message.ts
-import mongoose, { Schema } from 'mongoose';
+import mongoose, { Schema, Document, models, Model } from 'mongoose';
 
-const MessageSchema = new Schema({
+export interface IMessage extends Document {
+  project: mongoose.Types.ObjectId;
+  sender: mongoose.Types.ObjectId;
+  message: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+const MessageSchema = new Schema<IMessage>({
   project: {
     type: Schema.Types.ObjectId,
     ref: 'Project',
@@ -17,12 +25,13 @@ const MessageSchema = new Schema({
     required: true,
     trim: true,
   },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
+}, { 
+  timestamps: true 
 });
 
 MessageSchema.index({ project: 1, createdAt: -1 });
 
-export default mongoose.model('Message', MessageSchema);
+// Use a NEW model name so Mongoose cannot use the old cached version
+const ChatMessage: Model<IMessage> = models.ChatMessage || mongoose.model<IMessage>('ChatMessage', MessageSchema);
+
+export default ChatMessage;

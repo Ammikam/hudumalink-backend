@@ -136,7 +136,7 @@ router.get('/project/:projectId/accepted', requireAuth, async (req: RequestWithU
       success: true,
       proposal: {
         _id: proposal._id,
-        price: proposal.price,       // ← designer's quoted fee — this is what client pays
+        price: proposal.price,     
         timeline: proposal.timeline,
         message: proposal.message,
         designer: proposal.designer,

@@ -1,4 +1,4 @@
-// backend/src/routes/projects.ts - UPDATED FOR currentPhotos
+// backend/src/routes/projects.ts - UPDATED FOR currentPhotos + invite on hire
 import express from 'express';
 import Project from '../models/Project';
 import { requireAuth } from '../middlewares/auth';
@@ -9,22 +9,34 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
-// Helper function to transform project with currentPhotos fallback
+// ─── Inline Invite model (same schema as invites.ts) ─────────────────────────
+// Defined here to avoid circular imports — safe because mongoose caches models
+const InviteSchema = new mongoose.Schema(
+  {
+    project:     { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+    designer:    { type: mongoose.Schema.Types.ObjectId, ref: 'User',    required: true, index: true },
+    status:      { type: String, enum: ['pending', 'accepted', 'declined'], default: 'pending' },
+    respondedAt: { type: Date },
+  },
+  { timestamps: true }
+);
+InviteSchema.index({ project: 1, designer: 1 }, { unique: true });
+const Invite = mongoose.models.Invite || mongoose.model('Invite', InviteSchema);
+
+// ─── Helper ───────────────────────────────────────────────────────────────────
 const transformProject = (project: any) => ({
   ...project,
-  currentPhotos: project.currentPhotos || project.beforePhotos || [],
-  beforePhotos: project.beforePhotos || [],
+  currentPhotos:    project.currentPhotos    || project.beforePhotos || [],
+  beforePhotos:     project.beforePhotos     || [],
   inspirationPhotos: project.inspirationPhotos || [],
   inspirationNotes: project.inspirationNotes || '',
-  photos: project.photos || [],
+  photos:           project.photos           || [],
 });
 
 // ─── Client's own projects ────────────────────────────────────────────────────
 router.get('/', requireAuth, async (req: RequestWithUser, res) => {
   const user = req.user;
-  if (!user) {
-    return res.status(401).json({ success: false, error: 'Unauthorized' });
-  }
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
     const projects = await Project.find({ 'client.clerkId': user.clerkId })
@@ -32,13 +44,7 @@ router.get('/', requireAuth, async (req: RequestWithUser, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const transformedProjects = projects.map(transformProject);
-
-    res.json({
-      success: true,
-      projects: transformedProjects,
-      count: transformedProjects.length,
-    });
+    res.json({ success: true, projects: projects.map(transformProject), count: projects.length });
   } catch (error) {
     console.error('Error fetching client projects:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch projects' });
@@ -48,14 +54,12 @@ router.get('/', requireAuth, async (req: RequestWithUser, res) => {
 // ─── Admin: all projects ──────────────────────────────────────────────────────
 router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res) => {
   const user = req.user;
-  if (!user) {
-    return res.status(401).json({ success: false, error: 'Unauthorized' });
-  }
+  if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
-    const page = parseInt(req.query.page as string) || 1;
+    const page  = parseInt(req.query.page as string)  || 1;
     const limit = parseInt(req.query.limit as string) || 15;
-    const skip = (page - 1) * limit;
+    const skip  = (page - 1) * limit;
 
     const [projects, total] = await Promise.all([
       Project.find()
@@ -72,14 +76,14 @@ router.get('/admin', requireAuth, requireAdmin, async (req: RequestWithUser, res
       return {
         ...transformProject(project),
         _id: project._id.toString(),
-        title: project.title || 'Untitled Project',
+        title:       project.title       || 'Untitled Project',
         description: project.description || 'No description',
-        budget: project.budget || 0,
-        status: project.status || 'open',
-        createdAt: project.createdAt,
+        budget:      project.budget      || 0,
+        status:      project.status      || 'open',
+        createdAt:   project.createdAt,
         client: {
-          _id: client.clerkId || project._id.toString(),
-          name: client.name,
+          _id:    client.clerkId || project._id.toString(),
+          name:   client.name,
           avatar: client.avatar || null,
         },
         designer: project.designer ?? null,
@@ -147,6 +151,7 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
   try {
     const project = await Project.findById(req.params.id);
     if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
+
     if (project.client.clerkId !== user.clerkId) {
       return res.status(403).json({ success: false, error: 'Only the project client can mark it as complete' });
     }
@@ -155,7 +160,9 @@ router.patch('/:id/complete', requireAuth, async (req: RequestWithUser, res) => 
     }
 
     if (project.designer) {
-      await User.findByIdAndUpdate(project.designer, { $inc: { 'designerProfile.projectsCompleted': 1 } });
+      await User.findByIdAndUpdate(project.designer, {
+        $inc: { 'designerProfile.projectsCompleted': 1 },
+      });
     }
 
     project.status = 'completed';
@@ -182,9 +189,9 @@ router.get('/:id', requireAuth, async (req: RequestWithUser, res) => {
     const project = await Project.findById(req.params.id).populate('designer', 'name avatar').lean();
     if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
 
-    const isAdmin = user.isAdmin;
-    const isClient = project.client.clerkId === user.clerkId;
-    const isDesigner = project.designer && project.designer._id.toString() === user._id.toString();
+    const isAdmin    = user.isAdmin;
+    const isClient   = project.client.clerkId === user.clerkId;
+    const isDesigner = project.designer && (project.designer as any)._id.toString() === user._id.toString();
 
     if (!isAdmin && !isClient && !isDesigner) {
       return res.status(403).json({ success: false, error: 'Access denied' });
@@ -203,7 +210,13 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
   if (!user) return res.status(401).json({ success: false, error: 'Unauthorized' });
 
   try {
-    const { title, description, location, budget, timeline, styles, photos, currentPhotos, beforePhotos, inspirationPhotos, inspirationNotes, client } = req.body;
+    const {
+      title, description, location, budget, timeline, styles,
+      photos, currentPhotos, beforePhotos,
+      inspirationPhotos, inspirationNotes,
+      client,
+      suggestedDesignerId, 
+    } = req.body;
 
     const project = new Project({
       title,
@@ -211,16 +224,39 @@ router.post('/', requireAuth, async (req: RequestWithUser, res) => {
       location,
       budget,
       timeline,
-      styles: styles || [],
-      photos: photos || [],
-      currentPhotos: currentPhotos || beforePhotos || [],
-      beforePhotos: beforePhotos || [],
+      styles:            styles            || [],
+      photos:            photos            || [],
+      currentPhotos:     currentPhotos     || beforePhotos || [],
+      beforePhotos:      beforePhotos      || [],
       inspirationPhotos: inspirationPhotos || [],
-      inspirationNotes: inspirationNotes || '',
+      inspirationNotes:  inspirationNotes  || '',
       client: { ...client, clerkId: user.clerkId },
     });
 
     await project.save();
+
+    if (suggestedDesignerId) {
+      try {
+        // Verify the designer exists and is approved before creating the invite
+        const designer = await User.findById(suggestedDesignerId).select('_id roles').lean();
+
+        if (designer && designer.roles?.includes('designer')) {
+          await Invite.findOneAndUpdate(
+            { project: project._id, designer: designer._id },
+            { $setOnInsert: { status: 'pending' } },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+          );
+          console.log(`[invite] Created invite for project ${project._id} → designer ${designer._id}`);
+        } else {
+          console.warn(`[invite] suggestedDesignerId ${suggestedDesignerId} not found or not a designer — skipping invite`);
+        }
+      } catch (inviteErr: any) {
+        // Invite creation failing must never block the project being saved
+        // The project is already open so the client isn't stuck
+        console.error('[invite] Failed to create invite (non-fatal):', inviteErr.message);
+      }
+    }
+
     res.status(201).json({ success: true, project, message: 'Project created successfully' });
   } catch (error) {
     console.error('Error creating project:', error);
@@ -236,23 +272,27 @@ router.patch('/:id', requireAuth, async (req: RequestWithUser, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
+
     if (!user.isAdmin && project.client.clerkId !== user.clerkId) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    const { title, description, location, budget, timeline, styles, photos, currentPhotos, beforePhotos, inspirationPhotos, inspirationNotes } = req.body;
+    const {
+      title, description, location, budget, timeline, styles,
+      photos, currentPhotos, beforePhotos, inspirationPhotos, inspirationNotes,
+    } = req.body;
 
-    if (title !== undefined) project.title = title;
-    if (description !== undefined) project.description = description;
-    if (location !== undefined) project.location = location;
-    if (budget !== undefined) project.budget = budget;
-    if (timeline !== undefined) project.timeline = timeline;
-    if (styles !== undefined) project.styles = styles;
-    if (photos !== undefined) project.photos = photos;
-    if (currentPhotos !== undefined) project.currentPhotos = currentPhotos;
-    if (beforePhotos !== undefined) project.beforePhotos = beforePhotos;
+    if (title             !== undefined) project.title             = title;
+    if (description       !== undefined) project.description       = description;
+    if (location          !== undefined) project.location          = location;
+    if (budget            !== undefined) project.budget            = budget;
+    if (timeline          !== undefined) project.timeline          = timeline;
+    if (styles            !== undefined) project.styles            = styles;
+    if (photos            !== undefined) project.photos            = photos;
+    if (currentPhotos     !== undefined) project.currentPhotos     = currentPhotos;
+    if (beforePhotos      !== undefined) project.beforePhotos      = beforePhotos;
     if (inspirationPhotos !== undefined) project.inspirationPhotos = inspirationPhotos;
-    if (inspirationNotes !== undefined) project.inspirationNotes = inspirationNotes;
+    if (inspirationNotes  !== undefined) project.inspirationNotes  = inspirationNotes;
 
     await project.save();
     res.json({ success: true, project, message: 'Project updated successfully' });

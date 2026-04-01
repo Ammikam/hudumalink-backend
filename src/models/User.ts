@@ -1,5 +1,5 @@
-// backend/src/models/User.ts - COMPLETE UPDATED VERSION
-import mongoose, { Schema, Document } from 'mongoose';
+// backend/src/models/User.ts
+import mongoose, { Schema, Document, models, Model } from 'mongoose';
 
 interface IReference {
   name: string;
@@ -63,7 +63,6 @@ export interface IUser extends Document {
   phone?: string;
   avatar?: string;
   
-  // ✅ Client profile fields
   location?: string;
   bio?: string;
   
@@ -152,13 +151,12 @@ const UserPreferencesSchema = new Schema<IUserPreferences>({
 
 const UserSchema = new Schema<IUser>(
   {
-    clerkId: { type: String, required: true, unique: true },
+    clerkId: { type: String, required: true, unique: true },   
     email: { type: String, required: true, unique: true },
     name: { type: String, required: true },
     phone: String,
     avatar: String,
     
-    // ✅ Client profile fields
     location: { type: String, default: '' },
     bio: { type: String, default: '', maxlength: 500 },
 
@@ -176,7 +174,6 @@ const UserSchema = new Schema<IUser>(
   { timestamps: true }
 );
 
-UserSchema.index({ clerkId: 1 }, { unique: true });
 UserSchema.index({ email: 1 }, { unique: true });
 UserSchema.index({ roles: 1 });
 UserSchema.index({ banned: 1 });
@@ -210,4 +207,7 @@ UserSchema.methods.updateRating = async function (
   await this.save();
 };
 
-export default mongoose.model<IUser>('User', UserSchema);
+// Safe model registration
+const User: Model<IUser> = models.User || mongoose.model<IUser>('User', UserSchema);
+
+export default User;
