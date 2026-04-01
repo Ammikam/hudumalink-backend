@@ -2,7 +2,10 @@
   "name": "hudumalink-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node dist/server.js",
     "dev": "ts-node-dev src/server.ts",
@@ -15,8 +18,6 @@
   "type": "commonjs",
   "dependencies": {
     "@clerk/clerk-sdk-node": "^4.13.23",
-    "@types/multer": "^2.0.0",
-    "@types/streamifier": "^0.1.2",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^2.8.0",
@@ -27,7 +28,6 @@
     "mongodb": "^7.0.0",
     "mongoose": "^9.0.2",
     "multer": "^2.0.2",
-    "ngrok": "^5.0.0-beta.2",
     "socket.io": "^4.8.3",
     "streamifier": "^0.1.1"
   },
@@ -36,7 +36,9 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
     "@types/node": "^25.0.3",
+    "@types/streamifier": "^0.1.2",
     "nodemon": "^3.1.11",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"
